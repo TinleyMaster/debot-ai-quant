@@ -1,0 +1,11 @@
+{
+  "build": {
+    "context": "collector"
+  },
+  "services": {
+    "postgres": {
+      "type": "postgresql",
+      "version": "17"
+    }
+  }
+}

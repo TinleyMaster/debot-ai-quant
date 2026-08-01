@@ -1,0 +1,127 @@
+{
+  "name": "Debot 采集服务健康监控",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "每30分钟触发",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://collector:8080/health",
+        "sendHeaders": false,
+        "sendBody": false,
+        "options": {
+          "timeout": 10000,
+          "redirect": {
+            "redirect": {}
+          }
+        }
+      },
+      "id": "health-check",
+      "name": "调用采集容器健康接口",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": [
+            {
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "notEquals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "status-check",
+      "name": "状态码 != 200?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
+        "content": "## 采集服务异常告警\n\n- 时间: {{ $now.format('YYYY-MM-DD HH:mm:ss') }}\n- 状态码: {{ $json.statusCode }}\n- 响应: {{ $json.body }}",
+        "height": 300,
+        "width": 400
+      },
+      "id": "alert-note",
+      "name": "生成告警记录",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1000, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 当采集容器不健康时，查询数据库采集日志辅助诊断\nconst pg = await global.get('pgPool');\n// 可扩展：发送飞书消息通知\nreturn { alert: true, message: '采集容器健康检查失败' };"
+      },
+      "id": "alert-action",
+      "name": "告警处理逻辑",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 300]
+    }
+  ],
+  "connections": {
+    "schedule-trigger": {
+      "main": [
+        [
+          {
+            "node": "health-check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "health-check": {
+      "main": [
+        [
+          {
+            "node": "status-check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "status-check": {
+      "main": [
+        [],
+        [
+          {
+            "node": "alert-action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "timezone": "America/New_York"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1.0.0",
+  "active": true
+}

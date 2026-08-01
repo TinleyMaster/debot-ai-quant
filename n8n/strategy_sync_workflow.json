@@ -1,0 +1,103 @@
+{
+  "name": "Debot 策略同步 - 推送最优参数到跟单",
+  "nodes": [
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://collector:8080/sync-strategy",
+        "sendHeaders": false,
+        "sendBody": false,
+        "options": {
+          "timeout": 30000,
+          "redirect": {}
+        }
+      },
+      "id": "sync-call",
+      "name": "调用策略同步接口",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": [
+            {
+              "leftValue": "={{ $json.synced }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "check-synced",
+      "name": "同步成功?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 策略同步完成，生成汇总摘要\nconst result = $input.first().json;\nconst s = result.strategy;\n\nif (!s) {\n  return { summary: '无启用的最优策略，跳过同步', strategy: null };\n}\n\nconst p = s.params;\nlet summary = '策略同步完成\\n';\nsummary += `止盈 ${(p.take_profit*100).toFixed(0)}% | 止损 ${(p.stop_loss*100).toFixed(0)}%\\n`;\nsummary += `仓位 ${(p.buy_ratio*100).toFixed(0)}% | 持仓 ${p.max_hold_hours}h\\n`;\nsummary += `流动性过滤: $${p.min_liquidity_usd.toLocaleString()}\\n`;\nsummary += `\\n回测基准:\\n`;\nsummary += `胜率 ${(s.win_rate*100).toFixed(1)}% | 收益 ${(s.backtest_profit*100).toFixed(1)}%\\n`;\nsummary += `最大回撤 ${(s.max_drawdown*100).toFixed(1)}%\\n`;\nsummary += `\\n同步状态: ${result.message}`;\n\nreturn {\n  summary: summary,\n  strategy: s,\n  synced: result.synced,\n  message: result.message\n};"
+      },
+      "id": "summary-code",
+      "name": "生成同步摘要",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 250]
+    },
+    {
+      "parameters": {
+        "content": "## 策略同步异常\n\n错误: {{ $json.error }}\n时间: {{ $now.format('YYYY-MM-DD HH:mm:ss') }}",
+        "height": 100,
+        "width": 350
+      },
+      "id": "error-alert",
+      "name": "同步失败告警",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1000, 450]
+    }
+  ],
+  "connections": {
+    "sync-call": {
+      "main": [
+        [
+          {
+            "node": "check-synced",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "check-synced": {
+      "main": [
+        [
+          {
+            "node": "summary-code",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "error-alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "timezone": "America/New_York"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1.0.0",
+  "active": true
+}

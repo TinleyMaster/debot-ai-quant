@@ -1,0 +1,28 @@
+{
+  "_comment": "Debot 页面元素选择器配置，页面结构变动时只需修改此文件",
+
+  "selectors": {
+    "signal_list": "a[href*='/token/solana/'], [class*='signal-card'], [class*='SignalCard'], .MuiTableRow-root",
+    "signal_time": "[class*='time'], [class*='TimeWidget'], [class*='post-time'], td:first-child span",
+    "contract_address": "a[href*='/token/solana/']",
+    "token_symbol": "a[href*='/token/solana/']",
+    "pool_value": "[class*='liquidity'], [class*='Liq'], td:nth-child(8)",
+    "holder_rate": "[class*='Top10'], [class*='top-holder'], td:nth-child(7)",
+    "signal_content": "[class*='AI'], [class*='multiplier'], [class*='badge']",
+    "source_url": "a[href*='/token/solana/']"
+  },
+
+  "risk_selectors": {
+    "pool_lock_status": "[class*='Mint'], [class*='lock']",
+    "buy_tax": "[class*='tax']",
+    "sell_tax": "[class*='tax']",
+    "contract_audit": "[class*='audit'], [class*='Mint']",
+    "risk_flags": "[class*='Blacklist'], [class*='risk']"
+  },
+
+  "scrape_rules": {
+    "max_signals_per_run": 50,
+    "skip_duplicate_check": false,
+    "require_contract_address": true
+  }
+}

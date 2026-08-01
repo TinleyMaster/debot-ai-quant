@@ -1,0 +1,135 @@
+{
+  "name": "Debot 行情数据补全",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "每15分钟触发",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://collector:8080/fetch-market",
+        "sendHeaders": false,
+        "sendBody": false,
+        "options": {
+          "timeout": 300000,
+          "redirect": {
+            "redirect": {}
+          }
+        }
+      },
+      "id": "fetch-market",
+      "name": "调用行情拉取接口",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": [
+            {
+              "leftValue": "={{ $json.success }}",
+              "rightValue": false,
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "check-success",
+      "name": "拉取成功?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
+        "content": "## 行情拉取完成\n\n- 拉取: {{ $json.fetched }} 条\n- 入库: {{ $json.stored }} 条\n- 累计: {{ $json.total_after }} 条快照",
+        "height": 120,
+        "width": 300
+      },
+      "id": "summary-note",
+      "name": "任务完成汇总",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1000, 200]
+    },
+    {
+      "parameters": {
+        "content": "## 行情拉取失败\n\n错误: {{ $json.error }}",
+        "height": 100,
+        "width": 300
+      },
+      "id": "error-note",
+      "name": "失败告警",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1000, 400]
+    }
+  ],
+  "connections": {
+    "schedule-trigger": {
+      "main": [
+        [
+          {
+            "node": "fetch-market",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fetch-market": {
+      "main": [
+        [
+          {
+            "node": "check-success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "check-success": {
+      "main": [
+        [
+          {
+            "node": "summary-note",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "error-note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "timezone": "America/New_York"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1.0.0",
+  "active": true
+}

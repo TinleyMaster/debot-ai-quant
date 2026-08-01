@@ -1,0 +1,191 @@
+{
+  "name": "Debot 每日回测 + 策略报告",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        },
+        "triggerTimes": {
+          "hour": 1,
+          "minute": 0
+        }
+      },
+      "id": "schedule-daily",
+      "name": "每早 01:00 触发",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://collector:8080/fetch-market",
+        "sendHeaders": false,
+        "sendBody": false,
+        "options": {
+          "timeout": 300000,
+          "redirect": {}
+        }
+      },
+      "id": "fetch-market-first",
+      "name": "先拉取最新行情",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://collector:8080/run-backtest",
+        "sendHeaders": false,
+        "sendBody": false,
+        "options": {
+          "timeout": 600000,
+          "redirect": {}
+        }
+      },
+      "id": "run-backtest",
+      "name": "执行回测计算",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": [
+            {
+              "leftValue": "={{ $json.success }}",
+              "rightValue": false,
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "check-backtest",
+      "name": "回测成功?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://collector:8080/sync-strategy",
+        "sendHeaders": false,
+        "sendBody": false,
+        "options": {
+          "timeout": 30000,
+          "redirect": {}
+        }
+      },
+      "id": "sync-strategy",
+      "name": "生成策略配置报告",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1250, 250]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 汇总回测结果 + 策略配置报告\nconst backtestResult = $('执行回测计算').first().json;\nconst reportResult = $input.first().json;\n\nconst topStrategies = backtestResult.top_strategies || [];\n\nlet summary = `每日回测完成\\n`;\nsummary += `测试了 ${backtestResult.combinations || '?'} 组参数组合\\n`;\n\nif (topStrategies.length > 0) {\n  const top = topStrategies[0];\n  const p = top.params;\n  summary += `\\n--- 最优回测结果 ---\\n`;\n  summary += `止盈 ${(p.take_profit*100).toFixed(0)}% | 止损 ${(p.stop_loss*100).toFixed(0)}%\\n`;\n  summary += `持仓 ${p.max_hold_hours}h | 单币最多买 ${p.max_buys_per_token} 次\\n`;\n  summary += `胜率 ${(top.win_rate*100).toFixed(1)}% | 收益 ${(top.total_profit_pct*100).toFixed(1)}%\\n`;\n  summary += `盈亏 $${top.total_profit_usd || '?'} | 盈亏比 ${top.profit_factor}\\n`;\n  summary += `回撤 ${(top.max_drawdown_pct*100).toFixed(1)}% | 交易 ${top.total_trades} 笔\\n`;\n}\n\nif (reportResult.has_strategy && reportResult.report) {\n  const cfg = reportResult.report.debot_config;\n  summary += `\\n--- Debot 跟单设置（照填） ---\\n`;\n  for (const [key, val] of Object.entries(cfg)) {\n    summary += `${key}: ${val}\\n`;\n  }\n}\n\nreturn {\n  summary: summary,\n  combinations: backtestResult.combinations,\n  top_strategies: topStrategies,\n  report: reportResult.report || null\n};"
+      },
+      "id": "summary-code",
+      "name": "汇总回测+配置报告",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 250]
+    },
+    {
+      "parameters": {
+        "content": "## 回测失败\n\n错误: {{ $json.error }}\n时间: {{ $now.format('YYYY-MM-DD HH:mm:ss') }}",
+        "height": 100,
+        "width": 350
+      },
+      "id": "error-alert",
+      "name": "回测失败告警",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1250, 500]
+    }
+  ],
+  "connections": {
+    "schedule-daily": {
+      "main": [
+        [
+          {
+            "node": "fetch-market-first",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fetch-market-first": {
+      "main": [
+        [
+          {
+            "node": "run-backtest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "run-backtest": {
+      "main": [
+        [
+          {
+            "node": "check-backtest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "check-backtest": {
+      "main": [
+        [
+          {
+            "node": "sync-strategy",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "error-alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "sync-strategy": {
+      "main": [
+        [
+          {
+            "node": "summary-code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "timezone": "America/New_York"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1.2.0",
+  "active": true
+}
