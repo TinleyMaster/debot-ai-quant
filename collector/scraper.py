@@ -395,6 +395,12 @@ class DebotScraper:
                 break
 
             try:
+                # 过滤噪声卡片：innerText < 20 字符的跳过（logo 链接等）
+                raw = card.inner_text().strip()
+                if len(raw) < 20:
+                    logger.debug(f"卡片 #{i} innerText 过短 ({len(raw)}字符)，跳过")
+                    continue
+
                 signal = self._parse_single_card(card)
                 if signal and signal.get("contract_address"):
                     signals.append(signal)

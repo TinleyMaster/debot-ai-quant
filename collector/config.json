@@ -2,7 +2,7 @@
   "_comment": "Debot 页面元素选择器配置，页面结构变动时只需修改此文件",
 
   "selectors": {
-    "signal_list": "a[class*='bella8'][href*='/token/solana/'], [class*='signal-card'], [class*='SignalCard']",
+    "signal_list": "a[href*='/token/solana/']",
     "signal_time": "[class*='time'], [class*='TimeWidget'], [class*='post-time'], td:first-child span",
     "contract_address": "a[href*='/token/solana/']",
     "token_symbol": "a[href*='/token/solana/']",
