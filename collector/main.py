@@ -53,6 +53,8 @@ _shutdown_flag = False
 # 最新阻断原因（供健康接口读取）
 _last_block_reason = ""
 _last_block_time = ""
+# 采集器实例引用（供调试接口使用）
+_scraper = None
 
 
 def handle_shutdown(signum, frame):
@@ -179,16 +181,23 @@ class HealthHandler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "unprocessed_signals": unprocessed,
                     "block_reason": _last_block_reason,
-                    "block_time": _last_block_time,
-                    "latest_alert": alert,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "last_block_time": _last_block_time,
+                    "version": os.environ.get("GIT_COMMIT", "unknown"),
                 })
                 self.wfile.write(resp.encode())
             except Exception as e:
-                self.send_response(503)
-                self.send_header("Content-Type", "application/json")
+                logger.error(f"健康检查异常: {e}")
+                self.send_response(500)
                 self.end_headers()
-                self.wfile.write(json.dumps({"status": "error", "message": str(e)}).encode())
+
+        elif self.path == "/version":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "version": os.environ.get("GIT_COMMIT", "unknown"),
+                "commit_msg": os.environ.get("GIT_COMMIT_MSG", ""),
+            }).encode())
 
         elif self.path == "/fetch-market":
             # n8n 触发行情数据拉取（带重试，防止偶发失败造成数据断档）
@@ -347,6 +356,48 @@ class HealthHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
 
+        elif self.path == "/debug-scrape":
+            # 即时抓取调试: 返回页面匹配到的原始卡片信息
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            result = {"status": "error", "message": "scraper not available"}
+            if _scraper:
+                try:
+                    _scraper._ensure_page()
+                    page = _scraper._page
+                    # 导航到信号页
+                    page.goto(_scraper.signal_url, timeout=30000, wait_until="domcontentloaded")
+                    _scraper._wait_for_spa_render()
+                    # 匹配所有 token 链接
+                    cards = page.query_selector_all("a[href*='/token/solana/']")
+                    card_data = []
+                    for i, c in enumerate(cards):
+                        try:
+                            text = c.inner_text().strip()
+                            href = c.get_attribute("href") or ""
+                            contract = _scraper._extract_contract_from_url(href)
+                            card_data.append({
+                                "i": i,
+                                "len": len(text),
+                                "href": href,
+                                "contract": contract[:12] + "..." if len(contract) > 15 else contract,
+                                "text_preview": text[:200]
+                            })
+                        except Exception:
+                            pass
+                    result = {
+                        "status": "ok",
+                        "url": page.url,
+                        "title": page.title(),
+                        "total_matched": len(cards),
+                        "valid_cards": sum(1 for c in card_data if c["len"] >= 20),
+                        "cards": card_data
+                    }
+                except Exception as e:
+                    result = {"status": "error", "message": str(e)}
+            self.wfile.write(json.dumps(result, ensure_ascii=False).encode())
+
         elif self.path == "/debug-card":
             # 查看卡片调试 HTML (在线分析 Debot 页面结构)
             debug_path = "/app/data/card_debug.html"
@@ -468,6 +519,9 @@ def main():
     # 启动采集器
     scraper = DebotScraper(config)
     scraper.start()
+
+    global _scraper
+    _scraper = scraper
 
     poll_interval = int(os.environ.get("POLL_INTERVAL_SECONDS", "90"))
     # 安全限制：最低 60 秒（降低 Cloudflare bot score 风险）
