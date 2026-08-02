@@ -56,6 +56,15 @@ tr:hover td{background:#161b22}
 .exit-tp{color:#3fb950;font-size:11px;padding:1px 6px;border-radius:4px;background:#3fb95022}
 .exit-sl{color:#f85149;font-size:11px;padding:1px 6px;border-radius:4px;background:#f8514922}
 .exit-to{color:#8b949e;font-size:11px;padding:1px 6px;border-radius:4px;background:#8b949e22}
+.strategy-table-wrap{overflow-x:auto;overflow-y:visible;-webkit-overflow-scrolling:touch}
+.strategy-table-wrap table{min-width:1200px;white-space:nowrap}
+.strategy-table-wrap th,.strategy-table-wrap td{font-size:11px;padding:4px 6px}
+.strategy-table-wrap th abbr{text-decoration:none;border-bottom:1px dotted #484f58;cursor:help}
+.kline-link{color:#58a6ff;text-decoration:none;font-size:14px;cursor:pointer}
+.kline-link:hover{color:#79c0ff}
+.kline-legend{display:flex;gap:12px;align-items:center;margin-top:4px;font-size:10px;color:#8b949e}
+.kline-legend span{display:inline-flex;align-items:center;gap:3px}
+.kline-legend .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
 .loading{display:flex;align-items:center;justify-content:center;height:200px;color:#8b949e;font-size:14px}
 .spinner{width:24px;height:24px;border:2px solid #30363d;border-top-color:#58a6ff;border-radius:50%;animation:spin .8s linear infinite;margin-right:8px}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -341,7 +350,7 @@ tr:hover td{background:#161b22}
 </div>
 
 <script>
-let lastResult = null, currentTab = 'rank';
+let lastResult = null, currentTab = 'rank', lastTrades = [];
 
 function updateLabel(el, labelId, suffix) {
   document.getElementById(labelId).textContent = el.tagName === 'SELECT'
@@ -536,32 +545,62 @@ function showGridResult(data, dur) {
     return;
   }
 
-  let html = '<table><thead><tr><th>#</th><th>止盈</th><th>止损</th><th>持仓</th><th>单币买</th><th>确认</th><th>市值Min</th><th>交易</th><th>胜率</th><th>收益</th><th>盈亏$</th><th>盈亏比</th><th>回撤</th></tr></thead><tbody>';
-  strategies.forEach((r,i) => {
+  // 紧凑表格头部（带简写 + 悬浮提示）
+  const headers = [
+    ['#',''], ['止盈',''], ['止损',''], ['持仓',''], ['买入','单币买入次数'],
+    ['确认','信号确认(个/分钟)'], ['首次','只跟首次信号'],
+    ['市值Min','最低市值过滤'], ['市值Max','最高市值过滤'],
+    ['年龄Min','代币最小创建时间(分)'], ['年龄Max','代币最大创建时间(时)'],
+    ['持有人','持有人最低数'], ['TOP<','TOP持仓小于'],
+    ['运行','运行结束时间'], ['交易','总交易笔数'],
+    ['胜率',''], ['收益',''], ['盈亏比',''], ['回撤',''],
+  ];
+  let html = '<div class="strategy-table-wrap"><table><thead><tr>';
+  for (const [h, tip] of headers) {
+    html += tip ? `<th><abbr title="${tip}">${h}</abbr></th>` : `<th>${h}</th>`;
+  }
+  html += '</tr></thead><tbody>';
+
+  strategies.forEach((r, i) => {
     const p = r.params;
     const cls = r.total_profit_pct >= 0 ? 'profit-pos' : 'profit-neg';
+    const mmcMin = (p.min_market_cap_usd || 0) > 0 ? '$'+(p.min_market_cap_usd/1000).toFixed(0)+'k' : '—';
+    const mmcMax = (p.max_market_cap_usd || 0) > 0 ? '$'+(p.max_market_cap_usd/1000).toFixed(0)+'k' : '—';
+    const ageMin = (p.min_token_age_minutes || 0) > 0 ? p.min_token_age_minutes+'分' : '—';
+    const ageMax = (p.max_token_age_hours || 0) > 0 ? p.max_token_age_hours+'h' : '—';
+    const hMin = (p.min_holders || 0) > 0 ? p.min_holders : '—';
+    const rtEnd = (p.runtime_end_hour || 0) > 0 ? p.runtime_end_hour+':00' : '全天';
+    const firstSig = p.only_first_signal ? '✓' : '—';
+    const confirm = `${p.signal_confirm_count || 1}个/${(p.signal_confirm_minutes || 1)}分`;
     html += `<tr>
-      <td class="rank">#${i+1}</td>
+      <td class="rank">${i+1}</td>
       <td>${(p.take_profit*100).toFixed(0)}%</td>
       <td>${(p.stop_loss*100).toFixed(0)}%</td>
       <td>${p.max_hold_hours}h</td>
       <td>${p.max_buys_per_token}</td>
-      <td>${p.signal_confirm_count || 1}个</td>
-      <td>${(p.min_market_cap_usd||0) > 0 ? '$'+(p.min_market_cap_usd/1000).toFixed(0)+'k' : '不限'}</td>
+      <td>${confirm}</td>
+      <td>${firstSig}</td>
+      <td>${mmcMin}</td>
+      <td>${mmcMax}</td>
+      <td>${ageMin}</td>
+      <td>${ageMax}</td>
+      <td>${hMin}</td>
+      <td>${(p.max_holder_rate||0)>0?(p.max_holder_rate*100).toFixed(0)+'%':'—'}</td>
+      <td>${rtEnd}</td>
       <td>${r.total_trades}</td>
       <td>${(r.win_rate*100).toFixed(1)}%</td>
       <td class="${cls}">${(r.total_profit_pct*100).toFixed(2)}%</td>
-      <td class="${cls}">${r.total_profit_usd >= 0 ? '+' : ''}$${r.total_profit_usd.toFixed(2)}</td>
       <td>${r.profit_factor >= 999 ? '∞' : r.profit_factor.toFixed(2)}</td>
       <td>${(r.max_drawdown_pct*100).toFixed(1)}%</td>
     </tr>`;
   });
-  html += '</tbody></table>';
+  html += '</tbody></table></div>';
   document.getElementById('content-rank').innerHTML = html;
 }
 
 function renderTradeTable(trades) {
-  let html = '<table><thead><tr><th>代币</th><th>合约</th><th>买入价</th><th>卖出价</th><th>收益率</th><th>盈亏$</th><th>持仓</th><th>退出</th><th>信号时间</th></tr></thead><tbody>';
+  lastTrades = trades || [];  // 保存供 K 线标签使用
+  let html = '<table><thead><tr><th>代币</th><th>合约</th><th>买入价</th><th>卖出价</th><th>收益率</th><th>盈亏$</th><th>持仓</th><th>退出</th><th>K线</th><th>信号时间</th></tr></thead><tbody>';
   trades.forEach(t => {
     const cls = t.profit_pct >= 0 ? 'profit-pos' : 'profit-neg';
     const reason = t.exit_reason === 'take_profit' ? `<span class="exit-tp">止盈</span>` : t.exit_reason === 'stop_loss' ? `<span class="exit-sl">止损</span>` : `<span class="exit-to">超时</span>`;
@@ -574,6 +613,7 @@ function renderTradeTable(trades) {
       <td class="${cls}">${t.profit_usd >= 0 ? '+' : ''}$${t.profit_usd.toFixed(4)}</td>
       <td>${t.hold_hours.toFixed(1)}h</td>
       <td>${reason}</td>
+      <td><a href="#" class="kline-link" onclick="viewTradeKline('${t.contract_address}', '${t.token_symbol}');return false">▶</a></td>
       <td class="signal-time">${t.signal_time ? t.signal_time.slice(0,16) : '-'}</td>
     </tr>`;
   });
@@ -731,7 +771,17 @@ function onTokenSelect(addr) {
   }
 }
 
-async function loadKline() {
+// 从交易明细跳转到 K 线，标注该交易的买卖点
+async function viewTradeKline(contract, symbol) {
+  switchTab('kline');
+  document.getElementById('kline-address').value = contract;
+  await loadTokenList();
+  // 找到该合约对应的交易
+  const related = lastTrades.filter(t => t.contract_address === contract);
+  await loadKline(related);
+}
+
+async function loadKline(trades) {
   const addr = document.getElementById('kline-address').value.trim();
   if (!addr) {
     document.getElementById('chart-container').innerHTML = '<div class="empty">请选择代币或粘贴合约地址</div>';
@@ -746,13 +796,13 @@ async function loadKline() {
       document.getElementById('chart-container').innerHTML = '<div class="empty">该代币暂无行情快照数据</div>';
       return;
     }
-    renderChart(data.kline, addr);
+    renderChart(data.kline, addr, trades);
   } catch(e) {
     document.getElementById('chart-container').innerHTML = `<div class="empty">加载失败: ${e.message}</div>`;
   }
 }
 
-function renderChart(klineData, addr) {
+function renderChart(klineData, addr, trades) {
   document.getElementById('chart-container').innerHTML = '<canvas id="klineCanvas"></canvas>';
 
   const labels = klineData.map(d => {
@@ -762,15 +812,56 @@ function renderChart(klineData, addr) {
   const prices = klineData.map(d => d.price_usd);
   const volumes = klineData.map(d => d.volume_h24_usd || 0);
 
-  // 计算价格变化方向
   const firstPrice = prices[0];
   const lastPrice = prices[prices.length - 1];
   const pctChange = firstPrice > 0 ? ((lastPrice - firstPrice) / firstPrice * 100) : 0;
   const changeCls = pctChange >= 0 ? 'price-up' : 'price-down';
   const changeSign = pctChange >= 0 ? '+' : '';
 
-  const ctx = document.getElementById('klineCanvas').getContext('2d');
+  // 买卖点标注：在价格数据集中用 pointRadius 标记
+  const buyPoints = [];  // {index, price}
+  const sellPoints = []; // {index, price, reason}
 
+  if (trades && trades.length > 0) {
+    for (const t of trades) {
+      // 在 kline 数据中找到最接近 entry_time / exit_time 的索引
+      const et = t.entry_time ? new Date(t.entry_time).getTime() : 0;
+      const xt = t.exit_time ? new Date(t.exit_time).getTime() : 0;
+      let bestBuy = -1, bestSell = -1;
+      let minBDiff = Infinity, minSDiff = Infinity;
+      for (let i = 0; i < klineData.length; i++) {
+        const kt = new Date(klineData[i].snapshot_time).getTime();
+        if (et > 0) {
+          const d = Math.abs(kt - et);
+          if (d < minBDiff) { minBDiff = d; bestBuy = i; }
+        }
+        if (xt > 0) {
+          const d = Math.abs(kt - xt);
+          if (d < minSDiff) { minSDiff = d; bestSell = i; }
+        }
+      }
+      if (bestBuy >= 0) buyPoints.push({index: bestBuy, price: t.entry_price_usd || prices[bestBuy]});
+      if (bestSell >= 0) sellPoints.push({index: bestSell, price: t.exit_price_usd || prices[bestSell], reason: t.exit_reason || 'timeout'});
+    }
+  }
+
+  // 构建价格数据集的 pointRadius 数组
+  const pointRadiusArr = new Array(prices.length).fill(0);
+  const pointBgArr = new Array(prices.length).fill('transparent');
+  for (const bp of buyPoints) {
+    if (bp.index < pointRadiusArr.length) {
+      pointRadiusArr[bp.index] = 6;
+      pointBgArr[bp.index] = '#3fb950';  // 绿色买入
+    }
+  }
+  for (const sp of sellPoints) {
+    if (sp.index < pointRadiusArr.length) {
+      pointRadiusArr[sp.index] = 6;
+      pointBgArr[sp.index] = sp.reason === 'take_profit' ? '#3fb950' : sp.reason === 'stop_loss' ? '#f85149' : '#d29922'; // 绿/红/黄
+    }
+  }
+
+  const ctx = document.getElementById('klineCanvas').getContext('2d');
   if (klineChart) klineChart.destroy();
 
   klineChart = new Chart(ctx, {
@@ -784,7 +875,10 @@ function renderChart(klineData, addr) {
         backgroundColor: 'rgba(88,166,255,0.1)',
         fill: true,
         tension: 0.2,
-        pointRadius: 0,
+        pointRadius: pointRadiusArr,
+        pointBackgroundColor: pointBgArr,
+        pointBorderColor: pointBgArr,
+        pointBorderWidth: 1,
         yAxisID: 'y',
       }, {
         label: '24h 成交量 (USD)',
@@ -853,6 +947,18 @@ function renderChart(klineData, addr) {
   label.textContent = `${changeSign}${pctChange.toFixed(2)}%`;
   document.getElementById('chart-container').style.position = 'relative';
   document.getElementById('chart-container').appendChild(label);
+
+  // 买卖点图例
+  if (buyPoints.length > 0 || sellPoints.length > 0) {
+    const legend = document.createElement('div');
+    legend.className = 'kline-legend';
+    legend.style.cssText = 'position:absolute;bottom:8px;left:12px;';
+    legend.innerHTML = '<span><span class="dot" style="background:#3fb950"></span> 买入</span>'
+      + '<span><span class="dot" style="background:#3fb950"></span> 止盈</span>'
+      + '<span><span class="dot" style="background:#f85149"></span> 止损</span>'
+      + '<span><span class="dot" style="background:#d29922"></span> 超时</span>';
+    document.getElementById('chart-container').appendChild(legend);
+  }
 }
 
 // 页面加载后自动触发初始 label 更新
