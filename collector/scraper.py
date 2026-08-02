@@ -59,6 +59,17 @@ class DebotScraper:
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled",
+                "--disable-gpu",
+                "--disable-software-rasterizer",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-sync",
+                "--disable-translate",
+                "--disable-default-apps",
+                "--mute-audio",
+                "--no-first-run",
+                "--disable-features=TranslateUI",
+                "--js-flags=--max-old-space-size=256",
             ],
         )
 
