@@ -522,6 +522,7 @@ class DebotScraper:
         """
         signal["token_symbol"] = lines[0][:128] if lines else ""
 
+        content_parts = []  # 累积信号信息而非覆盖
         i = 1
         while i < len(lines):
             line = lines[i]
@@ -535,7 +536,7 @@ class DebotScraper:
 
             # 价格变化百分比
             if (line.startswith("+") or line.startswith("-")) and "%" in line:
-                signal["signal_content"] = f"24h: {line}"
+                content_parts.append(f"24h: {line}")
                 # 下一行如果是 $ 开头且没有 MC 标签，就是市值
                 if i + 1 < len(lines) and lines[i + 1].startswith("$"):
                     if signal["pool_value"] is None:
@@ -549,21 +550,24 @@ class DebotScraper:
                 i += 1
                 continue
 
-            # 排名
-            if line.startswith("#") and line[1:].isdigit():
-                signal["signal_content"] = (signal["signal_content"] + f" 排名: {line}").strip()
-                i += 1
-                continue
-
-            # TXs 标签
+            # TXs 标签（必须先于排名检测，确保 buy/sell 不被当成排名）
             if upper in ("TXS", "TX", "TRANSACTIONS") and i + 1 < len(lines):
                 buy = lines[i + 1]
                 sell = lines[i + 3] if i + 3 < len(lines) and lines[i + 2] == "/" else lines[i + 2] if i + 2 < len(lines) else "?"
-                signal["signal_content"] = f"TXs: {buy}/{sell}"
+                content_parts.append(f"成交量: {buy}/{sell}")
                 i += 4
                 continue
 
+            # 排名 (独立行)
+            if line.startswith("#") and line[1:].isdigit():
+                content_parts.append(line)
+                i += 1
+                continue
+
             i += 1
+
+        # 组装最终 signal_content
+        signal["signal_content"] = " · ".join(content_parts) if content_parts else ""
 
         # 兜底: 如果在 lines 后面还有 $ 值没被 MC 标签覆盖，作为 pool_value
         if signal["pool_value"] is None:

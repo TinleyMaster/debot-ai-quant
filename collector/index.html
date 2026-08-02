@@ -66,7 +66,10 @@ tr:hover td{background:#161b22}
 .contract-link:hover{text-decoration:underline}
 /* 信号直播 & K线 */
 #signal-table td{white-space:nowrap}
-.signal-content{max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:#8b949e}
+.signal-content{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:#8b949e}
+.signal-24h-up{color:#3fb950;font-weight:600}
+.signal-24h-down{color:#f85149;font-weight:600}
+.signal-rank{display:inline-block;background:#1f6feb22;color:#58a6ff;padding:1px 5px;border-radius:4px;font-weight:600;font-size:10px}
 .auto-refresh{font-size:11px;color:#3fb950;margin-left:8px}
 .kline-panel{display:flex;gap:12px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
 .kline-panel input{flex:1;min-width:200px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:13px;font-family:monospace}
@@ -490,6 +493,16 @@ async function loadSignals() {
   }
 }
 
+function formatSignalContent(raw) {
+  if (!raw || raw === '-') return '-';
+  // 24h 涨跌着色
+  let html = raw.replace(/(24h:\s*)([+-][\d.]+%)/g,
+    (_, prefix, pct) => prefix + `<span class="${pct.startsWith('+') ? 'signal-24h-up' : 'signal-24h-down'}">${pct}</span>`);
+  // 排名 #N 徽章化
+  html = html.replace(/(^|\s)(#\d+)(?=\s|$)/g, '$1<span class="signal-rank">$2</span>');
+  return html;
+}
+
 function renderSignalTable(signals) {
   if (!signals || signals.length === 0) {
     document.getElementById('content-signals').innerHTML = '<div class="empty">暂无信号数据</div>';
@@ -503,13 +516,13 @@ function renderSignalTable(signals) {
     const age = sigTime ? Math.floor((now - sigTime) / 60000) : '?';
     const ageStr = age < 1 ? '刚刚' : age < 60 ? `${age}分钟前` : age < 1440 ? `${Math.floor(age/60)}小时前` : `${Math.floor(age/1440)}天前`;
     const poolVal = s.pool_value ? (s.pool_value >= 1e6 ? '$'+(s.pool_value/1e6).toFixed(1)+'M' : s.pool_value >= 1e3 ? '$'+(s.pool_value/1e3).toFixed(1)+'K' : '$'+s.pool_value.toFixed(0)) : '-';
-    const signalInfo = s.signal_content || '-';
+    const signalInfo = formatSignalContent(s.signal_content || '');
     html += `<tr>
       <td class="signal-time">${ageStr}</td>
       <td><b>${s.token_symbol || '?'}</b></td>
-      <td><a class="contract-link" href="https://dexscreener.com/solana/${s.contract_address}" target="_blank">${s.contract_address.slice(0,6)}...${s.contract_address.slice(-4)}</a></td>
+      <td><a class="contract-link" href="https://debot.ai/token/solana/${s.contract_address}" target="_blank">${s.contract_address.slice(0,6)}...${s.contract_address.slice(-4)}</a></td>
       <td>${poolVal}</td>
-      <td class="signal-content" title="${(signalInfo || '').replace(/"/g,'&quot;')}">${signalInfo}</td>
+      <td class="signal-content" title="${(s.signal_content || '').replace(/"/g,'&quot;')}">${signalInfo}</td>
     </tr>`;
   });
   html += '</tbody></table>';
