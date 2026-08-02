@@ -55,27 +55,50 @@ class DebotScraper:
         self._browser = self._playwright.chromium.launch(
             headless=True,
             args=[
+                # ---- Docker 容器必需 ----
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
+                "--no-zygote",
+
+                # ---- 进程 / 线程封顶 ----
+                "--renderer-process-limit=1",
+                "--num-raster-threads=1",
+
+                # ---- 低端设备模式（激活 Chrome 内存节省策略） ----
+                "--enable-low-end-device-mode",
+
+                # ---- CPU 相关 ----
                 "--disable-gpu",
                 "--disable-software-rasterizer",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-features=TranslateUI,AudioServiceOutOfProcess,IsolateOrigins,site-per-process",
+
+                # ---- 禁用非必要后台功能 ----
                 "--disable-extensions",
                 "--disable-background-networking",
                 "--disable-sync",
                 "--disable-translate",
                 "--disable-default-apps",
+                "--disable-breakpad",
+                "--disable-component-update",
+                "--disable-hang-monitor",
+                "--disable-prompt-on-repost",
+                "--disable-domain-reliability",
+
+                # ---- 静音 ----
                 "--mute-audio",
                 "--no-first-run",
-                "--disable-features=TranslateUI",
-                "--js-flags=--max-old-space-size=256",
+
+                # ---- 内存封顶 ----
+                "--js-flags=--max-old-space-size=128",
+                "--memory-pressure-off",
             ],
         )
 
-        # 创建浏览器上下文（模拟真实浏览器）
+        # 创建浏览器上下文（模拟真实浏览器，小视口节省资源）
         self._context = self._browser.new_context(
-            viewport={"width": 1920, "height": 1080},
+            viewport={"width": 1280, "height": 720},
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
