@@ -396,8 +396,8 @@ class DebotScraper:
         raw_text = card.inner_text().strip()
         lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
 
-        # 检测卡片类型
-        is_detail = "AI报告" in raw_text
+        # 检测卡片类型（页面实际显示"报告"，非"AI报告"）
+        is_detail = "报告" in raw_text
 
         # 初始化字段
         signal["token_symbol"] = ""
@@ -478,7 +478,7 @@ class DebotScraper:
 
             # 代币名: 下一个非数字行，在 Top10 和时间之后
             if (signal["token_symbol"] == "" and ls
-                    and ls not in ("ATH", "Top10", "AI报告", "同时买入", "平均买入金额",
+                    and ls not in ("ATH", "Top10", "AI报告", "报告", "同时买入", "平均买入金额",
                                    "市值", "持有人", "价格", "流动池", "弃权", "黑名单")
                     and not re.match(r'^[\d.,]+$', ls)
                     and not re.match(r'^\d+[dhms]$', ls)  # age like "31d"
@@ -494,12 +494,12 @@ class DebotScraper:
                 signal["pool_value"] = self._parse_number(lines[i + 1])
 
             # 构建 signal_content (汇总关键信息)
-            if ls.startswith("<") and ls.endswith("x"):
-                # 倍数如 <1x, 68x
+            if re.match(r'^<?\d+\.?\d*x$', ls) or (ls.startswith("<") and ls.endswith("x")):
+                # 倍数如 4x, 12x, <1x
                 if signal["signal_content"]:
                     signal["signal_content"] += "; "
                 signal["signal_content"] += f"倍数: {ls}"
-            elif "聪明钱包" in ls:
+            elif "聪明钱包" in ls or "聪明钱" in ls:
                 if signal["signal_content"]:
                     signal["signal_content"] += "; "
                 signal["signal_content"] += ls
