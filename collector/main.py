@@ -55,6 +55,9 @@ _last_block_reason = ""
 _last_block_time = ""
 # 采集器实例引用（供调试接口使用）
 _scraper = None
+# 连续空跑轮次计数（用于触发浏览器重启）
+_consecutive_empty_rounds = 0
+_last_signal_time = ""  # 最近一次成功入库的信号时间
 
 
 def handle_shutdown(signum, frame):
@@ -93,7 +96,7 @@ def run_once(scraper: DebotScraper) -> dict:
     执行一轮采集任务。
     返回统计信息。
     """
-    global _last_block_reason, _last_block_time
+    global _last_block_reason, _last_block_time, _consecutive_empty_rounds, _last_signal_time
     start_time = time.time()
     stats = {"scraped": 0, "new": 0, "errors": 0, "error_detail": None, "alert_type": None}
 
@@ -110,8 +113,17 @@ def run_once(scraper: DebotScraper) -> dict:
             logger.warning(f"页面被阻断: {scraper._block_reason}")
 
         if not signals:
-            logger.info("本轮未抓取到信号")
+            _consecutive_empty_rounds += 1
+            logger.info(f"本轮未抓取到信号 (连续 {_consecutive_empty_rounds} 轮空跑)")
+            # 连续 5 轮空跑 + 非阻断状态 → 强制重启浏览器
+            if _consecutive_empty_rounds >= 5 and not scraper._block_reason:
+                logger.warning(f"连续 {_consecutive_empty_rounds} 轮空跑，强制重启浏览器")
+                scraper.restart_browser()
+                _consecutive_empty_rounds = 0
             return stats
+
+        # 重置空跑计数
+        _consecutive_empty_rounds = 0
 
         # 2. 写入数据库（去重）
         with get_conn() as conn:
@@ -120,6 +132,7 @@ def run_once(scraper: DebotScraper) -> dict:
                     new_id = insert_signal(conn, sig)
                     if new_id:
                         stats["new"] += 1
+                        _last_signal_time = sig.get("signal_time", "")
                         logger.info(f"新信号入库: {sig.get('token_symbol', '?')} {sig['contract_address']}")
                 except Exception as e:
                     stats["errors"] += 1
@@ -182,6 +195,8 @@ class HealthHandler(BaseHTTPRequestHandler):
                     "unprocessed_signals": unprocessed,
                     "block_reason": _last_block_reason,
                     "last_block_time": _last_block_time,
+                    "consecutive_empty_rounds": _consecutive_empty_rounds,
+                    "last_signal_time": _last_signal_time,
                     "version": os.environ.get("GIT_COMMIT", "unknown"),
                 })
                 self.wfile.write(resp.encode())

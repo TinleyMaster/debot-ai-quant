@@ -114,11 +114,44 @@ class DebotScraper:
         self._page = self._context.new_page()
         logger.info("浏览器启动完成")
 
+    def is_browser_alive(self) -> bool:
+        """检测浏览器和上下文是否存活"""
+        try:
+            if self._browser is None or not self._browser.is_connected():
+                return False
+            if self._context is None:
+                return False
+            # 轻量探活：尝试获取 contexts 列表
+            self._browser.contexts
+            return True
+        except Exception:
+            return False
+
+    def restart_browser(self):
+        """完全重启浏览器（用于崩溃后自愈）"""
+        logger.warning("正在重启浏览器...")
+        try:
+            self.stop()
+        except Exception:
+            pass
+        self.start()
+        logger.info("浏览器已重启")
+
     def _ensure_page(self):
-        """确保页面存在，不存在则创建"""
+        """确保页面存在，浏览器崩溃时自动重启"""
+        if not self.is_browser_alive():
+            logger.warning("浏览器已崩溃，触发自动重启")
+            self.restart_browser()
+
         if self._page is None or self._page.is_closed():
-            self._page = self._context.new_page()
-            logger.debug("创建新页面")
+            try:
+                self._page = self._context.new_page()
+                logger.debug("创建新页面")
+            except Exception as e:
+                logger.error(f"创建新页面失败: {e}，尝试重启浏览器")
+                self.restart_browser()
+                self._page = self._context.new_page()
+                logger.info("浏览器重启后创建新页面成功")
 
     def close_page(self):
         """关闭当前页面释放 CPU（避免 SPA WebSocket 持续渲染）"""
@@ -170,6 +203,10 @@ class DebotScraper:
         for attempt in range(1, self.max_retries + 1):
             try:
                 logger.info(f"导航到: {url} (第 {attempt} 次)")
+                # 导航前确保浏览器存活
+                if not self.is_browser_alive():
+                    logger.warning("导航前检测到浏览器已崩溃，重启中...")
+                    self.restart_browser()
                 response = self._page.goto(url, timeout=self.timeout, wait_until="domcontentloaded")
 
                 if response and response.status >= 400:
