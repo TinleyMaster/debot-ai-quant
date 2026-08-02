@@ -64,15 +64,29 @@ tr:hover td{background:#161b22}
 .signal-time{font-size:11px;color:#8b949e}
 .contract-link{color:#58a6ff;text-decoration:none;font-family:monospace;font-size:11px}
 .contract-link:hover{text-decoration:underline}
+/* 信号直播 & K线 */
+#signal-table td{white-space:nowrap}
+.signal-content{max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:#8b949e}
+.auto-refresh{font-size:11px;color:#3fb950;margin-left:8px}
+.kline-panel{display:flex;gap:12px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.kline-panel input{flex:1;min-width:200px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:13px;font-family:monospace}
+.kline-panel select{min-width:200px}
+.kline-panel .btn{flex-shrink:0}
+.chart-wrapper{position:relative;height:400px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px}
+.chart-wrapper canvas{width:100%!important;height:100%!important}
+.token-price{font-family:monospace;font-size:11px}
+.price-up{color:#3fb950}
+.price-down{color:#f85149}
 </style>
 </head>
 <body>
 <div class="header">
   <h1>Debot AI Quant - 回测操作台</h1>
   <div class="info">
-    <span>买入: 0.1 SOL | 滑点: 1% | DEX费: 0.25% | 优先费: 0.001 SOL</span>
+    <span>买入: 0.1 SOL | 滑点: 20% | DEX费: 0.25% | 优先费: 0.001 SOL</span>
   </div>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <div class="layout">
   <!-- 左侧参数面板 -->
   <div class="panel panel-left">
@@ -172,12 +186,30 @@ tr:hover td{background:#161b22}
     <div class="tabs">
       <div class="tab active" onclick="switchTab('rank')" id="tab-rank">策略排名</div>
       <div class="tab" onclick="switchTab('detail')" id="tab-detail">交易明细</div>
+      <div class="tab" onclick="switchTab('signals')" id="tab-signals">最新信号 <span class="auto-refresh" id="signal-indicator"></span></div>
+      <div class="tab" onclick="switchTab('kline')" id="tab-kline">K线行情</div>
     </div>
     <div class="tab-content" id="content-rank">
       <div class="empty">点击「当前参数回测」或「全部迭代回测」开始</div>
     </div>
     <div class="tab-content" id="content-detail" style="display:none">
       <div class="empty">回测完成后查看交易明细</div>
+    </div>
+    <div class="tab-content" id="content-signals" style="display:none">
+      <div class="loading"><div class="spinner"></div>加载最新信号...</div>
+    </div>
+    <div class="tab-content" id="content-kline" style="display:none">
+      <div class="kline-panel">
+        <select id="token-select" onchange="onTokenSelect(this.value)" style="min-width:240px">
+          <option value="">-- 选择一个代币 --</option>
+        </select>
+        <span style="color:#8b949e;font-size:12px">或输入合约:</span>
+        <input type="text" id="kline-address" placeholder="粘贴合约地址...">
+        <button class="btn btn-primary" onclick="loadKline()">查看K线</button>
+      </div>
+      <div class="chart-wrapper" id="chart-container">
+        <div class="empty">选择一个代币或粘贴合约地址查看K线</div>
+      </div>
     </div>
   </div>
 </div>
@@ -403,6 +435,15 @@ function switchTab(tab) {
   document.getElementById('tab-'+tab).classList.add('active');
   document.getElementById('content-rank').style.display = tab === 'rank' ? '' : 'none';
   document.getElementById('content-detail').style.display = tab === 'detail' ? '' : 'none';
+  document.getElementById('content-signals').style.display = tab === 'signals' ? '' : 'none';
+  document.getElementById('content-kline').style.display = tab === 'kline' ? '' : 'none';
+
+  if (tab === 'signals') {
+    if (!signalsLoaded) { loadSignals(); startSignalRefresh(); }
+  }
+  if (tab === 'kline' && !tokensLoaded) {
+    loadTokenList();
+  }
 }
 
 function showDataQuality(dq) {
@@ -419,6 +460,215 @@ function showDataQuality(dq) {
     回测无法模拟跨时间价格变动，结果不可靠。
     <br>需要定期运行「行情拉取」积累时间序列数据 (当前仅 ${dq.total_unique_timepoints || 0} 个时间点)。`;
   row.parentNode.insertBefore(warn, row);
+}
+
+// ============================================================
+// 最新信号直播
+// ============================================================
+let signalsLoaded = false, signalTimer = null;
+
+function startSignalRefresh() {
+  if (signalTimer) return;
+  signalTimer = setInterval(loadSignals, 30000); // 每30秒刷新
+  document.getElementById('signal-indicator').textContent = '● 直播';
+}
+
+function stopSignalRefresh() {
+  if (signalTimer) { clearInterval(signalTimer); signalTimer = null; }
+  document.getElementById('signal-indicator').textContent = '';
+}
+
+async function loadSignals() {
+  try {
+    const resp = await fetch('/latest-signals?limit=50');
+    const data = await resp.json();
+    if (!data.success) throw new Error(data.error);
+    signalsLoaded = true;
+    renderSignalTable(data.signals);
+  } catch(e) {
+    document.getElementById('content-signals').innerHTML = `<div class="empty">加载失败: ${e.message}</div>`;
+  }
+}
+
+function renderSignalTable(signals) {
+  if (!signals || signals.length === 0) {
+    document.getElementById('content-signals').innerHTML = '<div class="empty">暂无信号数据</div>';
+    return;
+  }
+  const now = new Date();
+  let html = `<div style="font-size:11px;color:#8b949e;margin-bottom:8px">共 ${signals.length} 条信号 · 自动刷新中</div>`;
+  html += '<table id="signal-table"><thead><tr><th>时间</th><th>代币</th><th>合约</th><th>池子价值</th><th>持有人%</th><th>内容</th></tr></thead><tbody>';
+  signals.forEach(s => {
+    const sigTime = s.signal_time ? new Date(s.signal_time) : null;
+    const age = sigTime ? Math.floor((now - sigTime) / 60000) : '?';
+    const ageStr = age < 1 ? '刚刚' : age < 60 ? `${age}分钟前` : age < 1440 ? `${Math.floor(age/60)}小时前` : `${Math.floor(age/1440)}天前`;
+    const poolVal = s.pool_value ? '$' + (s.pool_value >= 1000 ? (s.pool_value/1000).toFixed(1)+'k' : s.pool_value.toFixed(0)) : '-';
+    const holderRate = s.holder_rate != null ? (s.holder_rate*100).toFixed(1)+'%' : '-';
+    html += `<tr>
+      <td class="signal-time">${ageStr}</td>
+      <td><b>${s.token_symbol || '?'}</b></td>
+      <td><a class="contract-link" href="https://dexscreener.com/solana/${s.contract_address}" target="_blank">${s.contract_address.slice(0,6)}...${s.contract_address.slice(-4)}</a></td>
+      <td>${poolVal}</td>
+      <td>${holderRate}</td>
+      <td class="signal-content" title="${(s.signal_content || '').replace(/"/g,'&quot;')}">${s.signal_content || '-'}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  document.getElementById('content-signals').innerHTML = html;
+}
+
+// ============================================================
+// K线行情
+// ============================================================
+let tokensLoaded = false, klineChart = null;
+
+async function loadTokenList() {
+  try {
+    const resp = await fetch('/tracked-tokens');
+    const data = await resp.json();
+    if (!data.success) throw new Error(data.error);
+    tokensLoaded = true;
+    const sel = document.getElementById('token-select');
+    sel.innerHTML = '<option value="">-- 选择一个代币 --</option>';
+    data.tokens.forEach(t => {
+      const price = t.price_usd ? (t.price_usd < 0.0001 ? t.price_usd.toExponential(2) : '$'+t.price_usd.toFixed(6)) : '';
+      const symbol = t.symbol || t.name || t.contract_address.slice(0,8);
+      sel.innerHTML += `<option value="${t.contract_address}">${symbol} ${price ? '('+price+')' : ''}</option>`;
+    });
+  } catch(e) {
+    console.error('加载代币列表失败:', e);
+  }
+}
+
+function onTokenSelect(addr) {
+  if (addr) {
+    document.getElementById('kline-address').value = addr;
+    loadKline();
+  }
+}
+
+async function loadKline() {
+  const addr = document.getElementById('kline-address').value.trim();
+  if (!addr) {
+    document.getElementById('chart-container').innerHTML = '<div class="empty">请选择代币或粘贴合约地址</div>';
+    return;
+  }
+  document.getElementById('chart-container').innerHTML = '<div class="loading"><div class="spinner"></div>加载K线数据...</div>';
+  try {
+    const resp = await fetch(`/token-kline?address=${encodeURIComponent(addr)}&limit=200`);
+    const data = await resp.json();
+    if (!data.success) throw new Error(data.error);
+    if (!data.kline || data.kline.length === 0) {
+      document.getElementById('chart-container').innerHTML = '<div class="empty">该代币暂无行情快照数据</div>';
+      return;
+    }
+    renderChart(data.kline, addr);
+  } catch(e) {
+    document.getElementById('chart-container').innerHTML = `<div class="empty">加载失败: ${e.message}</div>`;
+  }
+}
+
+function renderChart(klineData, addr) {
+  document.getElementById('chart-container').innerHTML = '<canvas id="klineCanvas"></canvas>';
+
+  const labels = klineData.map(d => {
+    const t = new Date(d.snapshot_time);
+    return t.toLocaleString('zh', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+  });
+  const prices = klineData.map(d => d.price_usd);
+  const volumes = klineData.map(d => d.volume_h24_usd || 0);
+
+  // 计算价格变化方向
+  const firstPrice = prices[0];
+  const lastPrice = prices[prices.length - 1];
+  const pctChange = firstPrice > 0 ? ((lastPrice - firstPrice) / firstPrice * 100) : 0;
+  const changeCls = pctChange >= 0 ? 'price-up' : 'price-down';
+  const changeSign = pctChange >= 0 ? '+' : '';
+
+  const ctx = document.getElementById('klineCanvas').getContext('2d');
+
+  if (klineChart) klineChart.destroy();
+
+  klineChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: '价格 (USD)',
+        data: prices,
+        borderColor: '#58a6ff',
+        backgroundColor: 'rgba(88,166,255,0.1)',
+        fill: true,
+        tension: 0.2,
+        pointRadius: 0,
+        yAxisID: 'y',
+      }, {
+        label: '24h 成交量 (USD)',
+        data: volumes,
+        borderColor: 'rgba(139,148,158,0.4)',
+        backgroundColor: 'rgba(139,148,158,0.15)',
+        fill: true,
+        tension: 0.2,
+        pointRadius: 0,
+        yAxisID: 'y1',
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { color: '#8b949e', font: { size: 11 }, boxWidth: 12, padding: 12 } },
+        tooltip: {
+          backgroundColor: '#161b22',
+          borderColor: '#30363d',
+          borderWidth: 1,
+          titleColor: '#c9d1d9',
+          bodyColor: '#c9d1d9',
+          callbacks: {
+            label: function(ctx) {
+              if (ctx.datasetIndex === 0) return '价格: $' + ctx.raw.toExponential(4);
+              return '成交量: $' + (ctx.raw >= 1000 ? (ctx.raw/1000).toFixed(1)+'k' : ctx.raw.toFixed(0));
+            }
+          }
+        },
+        subtitle: {
+          display: true,
+          text: `${addr.slice(0,8)}...${addr.slice(-6)} | ${klineData.length} 个快照 | 区间 ${changeSign}${pctChange.toFixed(2)}%`,
+          color: '#8b949e', font: { size: 10 },
+          padding: { bottom: 8 }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: '#484f58', font: { size: 10 }, maxRotation: 45, maxTicksLimit: 20 },
+          grid: { color: '#21262d' }
+        },
+        y: {
+          type: 'logarithmic',
+          position: 'left',
+          title: { display: true, text: '价格 (USD)', color: '#58a6ff', font: { size: 10 } },
+          ticks: { color: '#58a6ff', font: { size: 9 }, callback: v => v < 0.0001 ? v.toExponential(2) : '$'+v.toFixed(8) },
+          grid: { color: '#21262d' }
+        },
+        y1: {
+          type: 'linear',
+          position: 'right',
+          title: { display: true, text: '成交量 (USD)', color: '#8b949e', font: { size: 10 } },
+          ticks: { color: '#8b949e', font: { size: 9 }, callback: v => v >= 1000 ? (v/1000).toFixed(0)+'k' : v },
+          grid: { display: false },
+          min: 0,
+        }
+      }
+    }
+  });
+
+  // 添加价格变化标签
+  const label = document.createElement('div');
+  label.style.cssText = `position:absolute;top:8px;right:12px;font-size:14px;font-weight:700;color:${pctChange>=0?'#3fb950':'#f85149'}`;
+  label.textContent = `${changeSign}${pctChange.toFixed(2)}%`;
+  document.getElementById('chart-container').style.position = 'relative';
+  document.getElementById('chart-container').appendChild(label);
 }
 
 // 页面加载后自动触发初始 label 更新

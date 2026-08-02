@@ -407,3 +407,94 @@ def get_active_strategy(conn) -> dict | None:
     except Exception as e:
         logger.error(f"获取活跃策略失败: {e}")
         return None
+
+
+# ============================================================
+# Web 操作台查询
+# ============================================================
+
+def get_latest_signals(conn, limit: int = 50) -> list:
+    """获取最新 N 条信号，供 Web 前端实时展示"""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT signal_time, contract_address, token_symbol,
+                       pool_value, holder_rate, signal_content
+                FROM debot_signal
+                WHERE contract_address != ''
+                ORDER BY signal_time DESC
+                LIMIT %s
+            """, (limit,))
+            columns = [desc[0] for desc in cur.description]
+            results = []
+            for row in cur.fetchall():
+                item = dict(zip(columns, row))
+                for key in ("pool_value", "holder_rate"):
+                    if item.get(key) is not None:
+                        item[key] = float(item[key])
+                if item.get("signal_time"):
+                    item["signal_time"] = str(item["signal_time"])
+                results.append(item)
+            return results
+    except Exception as e:
+        logger.error(f"获取最新信号失败: {e}")
+        return []
+
+
+def get_token_kline(conn, contract_address: str, limit: int = 100) -> list:
+    """获取指定代币的价格历史 (K线数据)"""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT price_usd, volume_h24_usd, liquidity_usd,
+                       price_change_m5, price_change_h1,
+                       txns_h24_buys, txns_h24_sells,
+                       snapshot_time
+                FROM token_market_snapshot
+                WHERE contract_address = %s AND price_usd IS NOT NULL AND price_usd > 0
+                ORDER BY snapshot_time ASC
+                LIMIT %s
+            """, (contract_address, limit))
+            columns = [desc[0] for desc in cur.description]
+            results = []
+            for row in cur.fetchall():
+                item = dict(zip(columns, row))
+                for key in ("price_usd", "volume_h24_usd", "liquidity_usd",
+                           "price_change_m5", "price_change_h1"):
+                    if item.get(key) is not None:
+                        item[key] = float(item[key])
+                if item.get("snapshot_time"):
+                    item["snapshot_time"] = str(item["snapshot_time"])
+                results.append(item)
+            return results
+    except Exception as e:
+        logger.error(f"获取K线数据失败 ({contract_address[:12]}...): {e}")
+        return []
+
+
+def get_all_tracked_tokens(conn) -> list:
+    """获取所有有行情快照的代币列表 (symbol + address)，供前端下拉选择"""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (tms.contract_address)
+                    tms.contract_address, tms.symbol, tms.name,
+                    tms.price_usd, tms.snapshot_time
+                FROM token_market_snapshot tms
+                WHERE tms.price_usd IS NOT NULL AND tms.price_usd > 0
+                ORDER BY tms.contract_address, tms.snapshot_time DESC
+                LIMIT 200
+            """)
+            columns = [desc[0] for desc in cur.description]
+            results = []
+            for row in cur.fetchall():
+                item = dict(zip(columns, row))
+                if item.get("price_usd") is not None:
+                    item["price_usd"] = float(item["price_usd"])
+                if item.get("snapshot_time"):
+                    item["snapshot_time"] = str(item["snapshot_time"])
+                results.append(item)
+            return results
+    except Exception as e:
+        logger.error(f"获取代币列表失败: {e}")
+        return []

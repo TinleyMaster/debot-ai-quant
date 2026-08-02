@@ -24,6 +24,7 @@ from db import (
     init_db_pool, close_db_pool, get_conn,
     insert_signal, insert_token_info, insert_run_log, insert_alert,
     get_latest_signal_time, get_unprocessed_count, get_latest_unresolved_alert,
+    get_latest_signals, get_token_kline, get_all_tracked_tokens,
 )
 from scraper import DebotScraper
 from market_fetcher import run_fetch as run_market_fetch
@@ -273,6 +274,78 @@ class HealthHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self.send_response(500)
                 self.end_headers()
+
+        elif self.path.startswith("/latest-signals"):
+            # 获取最新信号 (支持 ?limit=50)
+            try:
+                qs = self.path.split("?")[1] if "?" in self.path else ""
+                params = dict(p.split("=") for p in qs.split("&") if "=" in p)
+                limit = int(params.get("limit", 50))
+            except Exception:
+                limit = 50
+            try:
+                with get_conn() as conn:
+                    signals = get_latest_signals(conn, limit=min(limit, 200))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "signals": signals, "count": len(signals)}, ensure_ascii=False).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path.startswith("/token-kline"):
+            # 获取代币 K 线数据 (?address=xxx&limit=100)
+            try:
+                qs = self.path.split("?")[1] if "?" in self.path else ""
+                params = dict(p.split("=") for p in qs.split("&") if "=" in p)
+                address = params.get("address", "")
+                limit = int(params.get("limit", 100))
+            except Exception:
+                address = ""
+                limit = 100
+            if not address:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": "缺少 address 参数"}).encode())
+                return
+            try:
+                with get_conn() as conn:
+                    kline = get_token_kline(conn, address, limit=min(limit, 500))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "kline": kline, "count": len(kline)}, ensure_ascii=False).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path.startswith("/tracked-tokens"):
+            # 获取所有代币列表（供前端下拉选择）
+            try:
+                with get_conn() as conn:
+                    tokens = get_all_tracked_tokens(conn)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "tokens": tokens, "count": len(tokens)}, ensure_ascii=False).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
 
         else:
             self.send_response(404)
