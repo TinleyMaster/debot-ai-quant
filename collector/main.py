@@ -484,6 +484,9 @@ def main():
 
             run_once(scraper)
 
+            # 关闭页面释放 CPU（避免 Debot SPA WebSocket 持续渲染）
+            scraper.close_page()
+
             # 随机间隔 60~180s，模拟真人刷新节奏，规避 Cloudflare 时序指纹
             actual_interval = random.randint(60, 180)
             logger.info(f"等待 {actual_interval}s 后下一轮...\n")

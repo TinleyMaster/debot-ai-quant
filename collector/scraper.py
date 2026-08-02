@@ -91,6 +91,19 @@ class DebotScraper:
         self._page = self._context.new_page()
         logger.info("浏览器启动完成")
 
+    def _ensure_page(self):
+        """确保页面存在，不存在则创建"""
+        if self._page is None or self._page.is_closed():
+            self._page = self._context.new_page()
+            logger.debug("创建新页面")
+
+    def close_page(self):
+        """关闭当前页面释放 CPU（避免 SPA WebSocket 持续渲染）"""
+        if self._page and not self._page.is_closed():
+            self._page.close()
+            self._page = None
+            logger.debug("页面已关闭释放资源")
+
     def stop(self):
         """关闭浏览器"""
         if self._context:
@@ -270,6 +283,9 @@ class DebotScraper:
         如果被 Cloudflare 拦截或需要登录，返回空列表并设置 self._block_reason。
         """
         self._block_reason = ""
+
+        # 确保页面存在（上一轮已关闭释放资源）
+        self._ensure_page()
 
         # 导航到信号页面
         if not self._navigate_with_retry(self.signal_url):
