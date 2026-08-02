@@ -5,6 +5,7 @@ Playwright Debot 信号采集器
 - 失败重试 + 指数退避
 """
 import os
+import re
 import json
 import time
 import random
@@ -356,94 +357,160 @@ class DebotScraper:
         return signals
 
     def _parse_single_card(self, card) -> Optional[dict]:
-        """解析单个信号卡片，提取所有字段
+        """解析单个信号卡片
         
-        Debot 当前布局: 每个卡片是一个 <a> 标签，innerText 包含:
-          代币名
-          +1.12%          (价格变化)
-          MC              
-          $17.7M          (市值)
-          TXs
-          172/638         (买入/卖出笔数)
-          #1              (排名)
+        Debot 页面有两类卡片，均使用 bella8 class:
+        1) 5分钟活跃度榜单: token_name, +price%, MC, $value, TXs, rank
+        2) 详细信号列表: 含 Top10%, 时间, 代币名, 合约, AI报告, 倍数, 
+           聪明钱包, MC, 持有人, 价格, 流动池, ATH
+        通过 innerText 中是否有 'AI报告' 来区分。
         """
         signal = {}
         tag_name = card.evaluate("el => el.tagName.toLowerCase()")
         is_link = (tag_name == "a")
 
-        if is_link:
-            href = card.get_attribute("href") or ""
-            contract = self._extract_contract_from_url(href)
-            signal["contract_address"] = contract
-            signal["source_url"] = href if href.startswith("http") else f"{self.base_url}{href}"
-
-            # 用 <a> 标签自身的 innerText (卡片内全部可见文本)
-            raw_text = card.inner_text().strip()
-            lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
-
-            signal["token_symbol"] = lines[0][:128] if lines else ""
-
-            # 解析结构化数据: MC(市值), 价格变化等
-            signal["pool_value"] = None   # 市值/MC
-            signal["holder_rate"] = None  # 暂不可用
-            signal["signal_content"] = ""
-            signal["signal_time"] = None
-
-            i = 1
-            while i < len(lines):
-                line = lines[i]
-                upper = line.upper().strip()
-
-                # MC / Market Cap
-                if upper in ("MC", "MARKET CAP", "MKT CAP", "LIQ", "LIQUIDITY") and i + 1 < len(lines):
-                    signal["pool_value"] = self._parse_number(lines[i + 1])
-                    i += 2
-                    continue
-
-                # 价格变化百分比
-                if line.startswith("+") or line.startswith("-"):
-                    if "%" in line:
-                        # 这是价格变化，不是 holder_rate，但我们先存着
-                        signal["signal_content"] = f"24h: {line}"
-                    i += 1
-                    continue
-
-                # 排名
-                if line.startswith("#") and line[1:].isdigit():
-                    signal["signal_content"] = (signal["signal_content"] + f" 排名: {line}").strip()
-                    i += 1
-                    continue
-
-                # TXs / Transactions
-                if upper in ("TXS", "TX", "TRANSACTIONS") and i + 1 < len(lines):
-                    signal["signal_content"] = (signal["signal_content"] + f" TXs: {lines[i+1]}").strip()
-                    i += 2
-                    continue
-
-                i += 1
-
-        else:
-            container = card
+        if not is_link:
+            # 非链接类型卡片（备用方案）
             contract = self._safe_extract_text_in_element(card, self.selectors.get("contract_address", ""))
             signal["contract_address"] = self._clean_contract_address(contract)
             signal["token_symbol"] = self._safe_extract_text_in_element(card, self.selectors.get("token_symbol", ""))
             signal["source_url"] = self._safe_extract_href_in_element(card, self.selectors.get("source_url", ""))
-
             raw_text = card.inner_text().strip()
             time_text = self._safe_extract_text_in_element(card, self.selectors.get("signal_time", ""))
             signal["signal_time"] = self._parse_time(time_text)
-
             pool_text = self._safe_extract_text_in_element(card, self.selectors.get("pool_value", ""))
             signal["pool_value"] = self._parse_number(pool_text) or self._extract_pool_value_from_text(raw_text)
-
             holder_text = self._safe_extract_text_in_element(card, self.selectors.get("holder_rate", ""))
             signal["holder_rate"] = self._parse_percentage(holder_text) or self._extract_holder_rate_from_text(raw_text)
-
             signal["signal_content"] = self._safe_extract_text_in_element(card, self.selectors.get("signal_content", ""))
             if not signal["signal_content"]:
                 signal["signal_content"] = self._extract_signal_content_from_text(raw_text, signal.get("token_symbol", ""))
+            return signal
+
+        # --- bella8 <a> 链接卡片 ---
+        href = card.get_attribute("href") or ""
+        contract = self._extract_contract_from_url(href)
+        signal["contract_address"] = contract
+        signal["source_url"] = href if href.startswith("http") else f"{self.base_url}{href}"
+
+        raw_text = card.inner_text().strip()
+        lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
+
+        # 检测卡片类型
+        is_detail = "AI报告" in raw_text
+
+        # 初始化字段
+        signal["token_symbol"] = ""
+        signal["pool_value"] = None
+        signal["holder_rate"] = None
+        signal["signal_content"] = ""
+        signal["signal_time"] = None
+
+        if is_detail:
+            self._parse_detail_card(lines, signal)
+        else:
+            self._parse_activity_card(lines, signal)
+
+        # 如果 token_symbol 还没值，取 lines[0]
+        if not signal["token_symbol"] and lines:
+            signal["token_symbol"] = lines[0][:128]
 
         return signal
+
+    def _parse_activity_card(self, lines: list, signal: dict):
+        """解析 5分钟活跃度榜单卡片
+        
+        格式: TOKEN_NAME, +X.X%, MC, $X.XM/K, TXs, NNN, /, NNN, #N
+        """
+        signal["token_symbol"] = lines[0][:128] if lines else ""
+
+        i = 1
+        while i < len(lines):
+            line = lines[i]
+            upper = line.upper().strip()
+
+            if upper in ("MC", "MARKET CAP", "MKT CAP", "LIQ", "LIQUIDITY") and i + 1 < len(lines):
+                signal["pool_value"] = self._parse_number(lines[i + 1])
+                i += 2
+                continue
+
+            if line.startswith("+") or line.startswith("-"):
+                if "%" in line:
+                    signal["signal_content"] = f"24h: {line}"
+                i += 1
+                continue
+
+            if line.startswith("#") and line[1:].isdigit():
+                signal["signal_content"] = (signal["signal_content"] + f" 排名: {line}").strip()
+                i += 1
+                continue
+
+            if upper in ("TXS", "TX", "TRANSACTIONS") and i + 1 < len(lines):
+                buy = lines[i + 1]
+                sell = lines[i + 3] if i + 3 < len(lines) and lines[i + 2] == "/" else lines[i + 2] if i + 2 < len(lines) else "?"
+                signal["signal_content"] = f"TXs: {buy}/{sell}"
+                i += 4  # skip buys, /, sells
+                continue
+
+            i += 1
+
+    def _parse_detail_card(self, lines: list, signal: dict):
+        """解析详细信号卡片
+        
+        格式: buy_buttons, ATH, $value, rank, 弃权, 黑名单, Top10, X%,
+              HH:MM:SS, TOKEN_NAME, CHINESE_NAME, AGE, CONTRACT_SHORT,
+              AI报告, 倍数, smart_wallets, 同时买入, 平均买入金额, $value,
+              市值, $current, $prev, 持有人, N, N, 价格, $curr, $prev,
+              流动池, $curr, $prev
+        """
+        n = len(lines)
+
+        for i, line in enumerate(lines):
+            ls = line.strip()
+
+            # Top10 holder %
+            if ls == "Top10" and i + 1 < n:
+                signal["holder_rate"] = self._parse_percentage(lines[i + 1])
+
+            # 信号时间 (HH:MM:SS)
+            if re.match(r'^\d{1,2}:\d{2}:\d{2}$', ls):
+                signal["signal_time"] = self._parse_time(ls)
+
+            # 代币名: 下一个非数字行，在 Top10 和时间之后
+            if (signal["token_symbol"] == "" and ls
+                    and ls not in ("ATH", "Top10", "AI报告", "同时买入", "平均买入金额",
+                                   "市值", "持有人", "价格", "流动池", "弃权", "黑名单")
+                    and not re.match(r'^[\d.,]+$', ls)
+                    and not re.match(r'^\d+[dhms]$', ls)  # age like "31d"
+                    and not ls.startswith("$")
+                    and not ls.startswith("<")
+                    and not ls.endswith("x")
+                    and not "pump" in ls.lower()
+                    and len(ls) > 1):
+                signal["token_symbol"] = ls[:128]
+
+            # pool_value: 市值行后的第一个 $ 值
+            if ls == "市值" and i + 1 < n:
+                signal["pool_value"] = self._parse_number(lines[i + 1])
+
+            # 构建 signal_content (汇总关键信息)
+            if ls.startswith("<") and ls.endswith("x"):
+                # 倍数如 <1x, 68x
+                if signal["signal_content"]:
+                    signal["signal_content"] += "; "
+                signal["signal_content"] += f"倍数: {ls}"
+            elif "聪明钱包" in ls:
+                if signal["signal_content"]:
+                    signal["signal_content"] += "; "
+                signal["signal_content"] += ls
+            elif ls == "平均买入金额" and i + 1 < n:
+                if signal["signal_content"]:
+                    signal["signal_content"] += "; "
+                signal["signal_content"] += f"均买: {lines[i+1]}"
+
+            # holder_rate 兜底: 百分比行在 Top10 之后
+            if ls == "Top10" and i + 1 < n and signal["holder_rate"] is None:
+                signal["holder_rate"] = self._parse_percentage(lines[i + 1])
 
     # ================================================================
     # 文本正则兜底提取 (选择器失败时的后备方案)
@@ -452,7 +519,6 @@ class DebotScraper:
     @staticmethod
     def _extract_pool_value_from_text(text: str) -> Optional[float]:
         """从文本中提取流动池价值，如 '$24.5K'、'$1.2M'、'$500'"""
-        import re
         # 匹配 $数字+单位 模式: $24.5K, $1.2M, $500, $45,123
         patterns = [
             (r'\$(\d+[\d,]*\.?\d*)\s*([Kk])', 1e3),     # $24.5K
@@ -475,7 +541,6 @@ class DebotScraper:
     @staticmethod
     def _extract_holder_rate_from_text(text: str) -> Optional[float]:
         """从文本中提取持有人比例，如 '22.5%'、'Top10 45%'"""
-        import re
         # 匹配百分比模式
         patterns = [
             r'(?:top\s*10|holder|holders?|持有)\s*[:：]?\s*(\d+\.?\d*)\s*%',  # "Top10: 22.5%"
@@ -495,7 +560,6 @@ class DebotScraper:
     @staticmethod
     def _extract_signal_content_from_text(text: str, token_symbol: str = "") -> str:
         """从文本中提取 AI 信号文案（如倍数、评分等）"""
-        import re
         # 优先匹配已知信号格式
         patterns = [
             r'(x\d+\.?\d*\s*(?:multiplier|signal|倍|信号))',  # x2.5 multiplier
@@ -528,7 +592,6 @@ class DebotScraper:
         """从 Debot URL 中提取合约地址，去除前缀 ID
         如 /token/solana/314495_Hd6pqdE... -> Hd6pqdE...
         """
-        import re
         match = re.search(r'/token/\w+/(?:[\d]+_)?([^/?]+)', url)
         if match:
             addr = match.group(1)
@@ -665,7 +728,6 @@ class DebotScraper:
         text = text.replace("地址:", "").replace("CA:", "").replace("Contract:", "").strip()
         # 截取有效长度（Solana 地址 44 字符，EVM 地址 42 字符）
         # 如果文本中包含多个 token，取第一个看起来像地址的
-        import re
         match = re.search(r'[1-9A-HJ-NP-Za-km-z]{32,44}', text)
         return match.group(0) if match else text
 
