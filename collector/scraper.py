@@ -364,7 +364,6 @@ class DebotScraper:
         is_link = (tag_name == "a")
 
         if is_link:
-            # card 本身就是 token 链接
             href = card.get_attribute("href") or ""
             contract = self._extract_contract_from_url(href)
             signal["contract_address"] = contract
@@ -373,21 +372,8 @@ class DebotScraper:
             signal["token_symbol"] = lines[0][:128] if lines else ""
             signal["source_url"] = href if href.startswith("http") else f"{self.base_url}{href}"
 
-            # 多层父容器查找，获取卡片完整内容
-            container = card
-            for parent_sel in [
-                '[class*="MuiTableRow"]', '[class*="MuiCard"]',
-                '[class*="signal-card"]', '[class*="SignalCard"]',
-                '[class*="card"]', '[class*="row"]', '[class*="item"]', 'tr',
-                '[class*="MuiGrid"]',
-            ]:
-                try:
-                    p = card.evaluate_handle(f"el => el.closest('{parent_sel}')")
-                    if p:
-                        container = p.as_element()
-                        break
-                except Exception:
-                    continue
+            # 获取完整表格行/卡片容器 (包含所有 td 的文本)
+            container = self._find_signal_container(card)
         else:
             container = card
             contract = self._safe_extract_text_in_element(card, self.selectors.get("contract_address", ""))
@@ -400,6 +386,21 @@ class DebotScraper:
             container_text = container.inner_text().strip()
         except Exception:
             container_text = ""
+
+        # 保存第一个卡片的 HTML 用于调试
+        if not getattr(self, '_debug_card_logged', False):
+            self._debug_card_logged = True
+            try:
+                outer = container.evaluate("el => el.outerHTML.substring(0,3000)")
+                logger.info(f"[DEBUG] 首个信号卡片容器文本: {container_text[:500]}")
+                logger.info(f"[DEBUG] 首个信号卡片容器标签: {container.evaluate('el => el.tagName')}")
+                # 保存完整 HTML 片段
+                debug_path = "/app/data/card_debug.html"
+                with open(debug_path, "w", encoding="utf-8") as f:
+                    f.write(outer)
+                logger.info(f"[DEBUG] 卡片 HTML 已保存到: {debug_path}")
+            except Exception as e:
+                logger.warning(f"[DEBUG] 保存卡片调试信息失败: {e}")
 
         # 信号时间
         time_text = self._safe_extract_text_in_element(container, self.selectors.get("signal_time", ""))
@@ -423,6 +424,36 @@ class DebotScraper:
             signal["signal_content"] = self._extract_signal_content_from_text(container_text, signal.get("token_symbol", ""))
 
         return signal
+
+    def _find_signal_container(self, card):
+        """从 <a> 链接向上查找完整的表格行/卡片容器
+        
+        Debot 页面使用 MUI 表格布局，合约链接在一个 <td> 中，
+        pool_value/holder_rate 等在其他 <td> 中。
+        需要拿到整行 <tr> 才能获取全部文本。
+        """
+        # 第一优先：找最近的 <tr> 或 table row 类
+        for sel in ['tr', '[class*="MuiTableRow"]', '[role="row"]']:
+            try:
+                el = card.evaluate_handle(f"el => el.closest('{sel}')")
+                if el:
+                    result = el.as_element()
+                    if result:
+                        return result
+            except Exception:
+                continue
+
+        # 第二优先：向上遍历最多 3 层父元素
+        try:
+            parent = card.evaluate_handle("el => { let p = el.parentElement; for(let i=0; i<3 && p; i++) { if(p.children.length >= 3) return p; p = p.parentElement; } return el.parentElement; }")
+            if parent:
+                result = parent.as_element()
+                if result:
+                    return result
+        except Exception:
+            pass
+
+        return card
 
     # ================================================================
     # 文本正则兜底提取 (选择器失败时的后备方案)

@@ -347,6 +347,25 @@ class HealthHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
 
+        elif self.path == "/debug-card":
+            # 查看卡片调试 HTML (在线分析 Debot 页面结构)
+            debug_path = "/app/data/card_debug.html"
+            try:
+                with open(debug_path, "r", encoding="utf-8") as f:
+                    html = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(f"<pre style='white-space:pre-wrap;word-break:break-all;font-size:12px;background:#1a1a2e;color:#e0e0e0;padding:16px'>{html}</pre>".encode())
+            except FileNotFoundError:
+                self.send_response(404)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"Debug HTML not yet generated. Wait for next scrape cycle.")
+            except Exception as e:
+                self.send_response(500)
+                self.end_headers()
+
         else:
             self.send_response(404)
             self.end_headers()
