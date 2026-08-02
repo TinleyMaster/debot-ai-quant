@@ -467,6 +467,10 @@ class DebotScraper:
         else:
             self._parse_activity_card(lines, signal)
 
+        # 兜底: 如果解析器没设 signal_time，使用当前时间
+        if signal.get("signal_time") is None:
+            signal["signal_time"] = datetime.now(UTC).isoformat()
+
         # 如果 token_symbol 还没值，取 lines[0]
         if not signal["token_symbol"] and lines:
             signal["token_symbol"] = lines[0][:128]
