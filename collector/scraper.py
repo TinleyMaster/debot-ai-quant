@@ -469,8 +469,9 @@ class DebotScraper:
 
     def _parse_activity_card(self, lines: list, signal: dict):
         """解析 5分钟活跃度榜单卡片
-        
-        格式: TOKEN_NAME, +X.X%, MC, $X.XM/K, TXs, NNN, /, NNN, #N
+
+        格式: TOKEN_NAME, +X.X%, $X.XM/K (市值无标签), NNN, /, NNN, #N
+        或:   TOKEN_NAME, +X.X%, MC, $X.XM/K, TXs, NNN, /, NNN, #N
         """
         signal["token_symbol"] = lines[0][:128] if lines else ""
 
@@ -479,30 +480,50 @@ class DebotScraper:
             line = lines[i]
             upper = line.upper().strip()
 
+            # 市值标签 + 下一行是值
             if upper in ("MC", "MARKET CAP", "MKT CAP", "LIQ", "LIQUIDITY") and i + 1 < len(lines):
                 signal["pool_value"] = self._parse_number(lines[i + 1])
                 i += 2
                 continue
 
-            if line.startswith("+") or line.startswith("-"):
-                if "%" in line:
-                    signal["signal_content"] = f"24h: {line}"
+            # 价格变化百分比
+            if (line.startswith("+") or line.startswith("-")) and "%" in line:
+                signal["signal_content"] = f"24h: {line}"
+                # 下一行如果是 $ 开头且没有 MC 标签，就是市值
+                if i + 1 < len(lines) and lines[i + 1].startswith("$"):
+                    if signal["pool_value"] is None:
+                        signal["pool_value"] = self._parse_number(lines[i + 1])
                 i += 1
                 continue
 
+            # 直接的 $ 值（市值无标签情况，兜底）
+            if line.startswith("$") and signal["pool_value"] is None:
+                signal["pool_value"] = self._parse_number(line)
+                i += 1
+                continue
+
+            # 排名
             if line.startswith("#") and line[1:].isdigit():
                 signal["signal_content"] = (signal["signal_content"] + f" 排名: {line}").strip()
                 i += 1
                 continue
 
+            # TXs 标签
             if upper in ("TXS", "TX", "TRANSACTIONS") and i + 1 < len(lines):
                 buy = lines[i + 1]
                 sell = lines[i + 3] if i + 3 < len(lines) and lines[i + 2] == "/" else lines[i + 2] if i + 2 < len(lines) else "?"
                 signal["signal_content"] = f"TXs: {buy}/{sell}"
-                i += 4  # skip buys, /, sells
+                i += 4
                 continue
 
             i += 1
+
+        # 兜底: 如果在 lines 后面还有 $ 值没被 MC 标签覆盖，作为 pool_value
+        if signal["pool_value"] is None:
+            for line in lines:
+                if line.startswith("$"):
+                    signal["pool_value"] = self._parse_number(line)
+                    break
 
     def _parse_detail_card(self, lines: list, signal: dict):
         """解析详细信号卡片
