@@ -12,7 +12,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .header .info{font-size:12px;color:#8b949e}
 .layout{display:flex;gap:0;height:calc(100vh - 52px);overflow:hidden}
 .panel{overflow-y:auto;padding:16px}
-.panel-left{width:340px;min-width:340px;background:#161b22;border-right:1px solid #30363d}
+.panel-left{width:380px;min-width:380px;background:#161b22;border-right:1px solid #30363d}
 .panel-right{flex:1;display:flex;flex-direction:column}
 .section-title{font-size:13px;font-weight:600;color:#58a6ff;margin-bottom:12px;padding-bottom:6px;border-bottom:1px solid #21262d;text-transform:uppercase;letter-spacing:.5px}
 .form-group{margin-bottom:14px}
@@ -93,19 +93,40 @@ tr:hover td{background:#161b22}
 <div class="layout">
   <!-- 左侧参数面板 -->
   <div class="panel panel-left">
-    <div class="section-title">回测参数</div>
-
+    <!-- 基础设置 -->
+    <div class="section-title">基础设置</div>
     <div class="form-group">
-      <label>止盈阈值 <span class="val" id="v-tp">30%</span></label>
-      <input type="range" id="take_profit" min="60" max="200" value="80" step="5" oninput="updateLabel(this,'v-tp','%')">
+      <label>买入金额 <span class="val" id="v-buyAmt">1.0 SOL</span></label>
+      <input type="range" id="buy_amount_sol" min="0.05" max="5" value="1.0" step="0.05" oninput="var v1=parseFloat(this.value);document.getElementById('v-buyAmt').textContent=v1.toFixed(2)+' SOL'">
+    </div>
+
+    <!-- 买入策略 -->
+    <div class="section-title">买入策略</div>
+    <div class="form-group">
+      <label>单币买入次数 <span class="val" id="v-buys">1 次</span></label>
+      <select id="max_buys_per_token" onchange="document.getElementById('v-buys').textContent=this.value+' 次'">
+        <option value="1" selected>1 次</option>
+        <option value="2">2 次</option>
+        <option value="3">3 次</option>
+        <option value="5">5 次</option>
+      </select>
+    </div>
+
+    <!-- 卖出策略 -->
+    <div class="section-title">卖出策略</div>
+    <div class="form-group">
+      <label>止盈倍数 <span class="val" id="v-tp">1.0x</span></label>
+      <input type="range" id="take_profit" min="60" max="200" value="100" step="5" oninput="var v2=parseInt(this.value);document.getElementById('v-tp').textContent=v2+'%';document.getElementById('v-tp-x').textContent=(v2/100).toFixed(1)+'x'">
+      <small id="v-tp-x" style="color:#58a6ff;font-size:10px">1.0x</small>
     </div>
     <div class="form-group">
       <label>止损阈值 <span class="val" id="v-sl">5%</span></label>
       <input type="range" id="stop_loss" min="2" max="30" value="5" step="1" oninput="updateLabel(this,'v-sl','%')">
     </div>
     <div class="form-group">
-      <label>最长持仓 <span class="val" id="v-hold">4h</span></label>
-      <select id="max_hold_hours">
+      <label>最长持仓 <span class="val" id="v-hold">24h</span></label>
+      <select id="max_hold_hours" onchange="document.getElementById('v-hold').textContent=this.value+'h'">
+        <option value="1">1 小时</option>
         <option value="4">4 小时</option>
         <option value="8">8 小时</option>
         <option value="12">12 小时</option>
@@ -113,49 +134,151 @@ tr:hover td{background:#161b22}
         <option value="48">48 小时</option>
       </select>
     </div>
-    <div class="form-group">
-      <label>单币最大买入次数 <span class="val" id="v-buys">1</span></label>
-      <select id="max_buys_per_token">
-        <option value="1" selected>1 次</option>
-        <option value="2">2 次</option>
-        <option value="3">3 次</option>
-        <option value="5">5 次</option>
-      </select>
+
+    <!-- 高级过滤 -->
+    <div class="section-title">高级过滤</div>
+    <div class="form-group" style="display:flex;align-items:center;gap:8px">
+      <label style="flex:1;margin:0;cursor:pointer" for="only_first_signal">只跟首次信号</label>
+      <input type="checkbox" id="only_first_signal" style="width:18px;height:18px;accent-color:#58a6ff">
     </div>
     <div class="form-group">
-      <label>最低流动性 <span class="val" id="v-liq">不限</span></label>
-      <select id="min_liquidity_usd">
-        <option value="0" selected>不限</option>
-        <option value="10000">$10,000</option>
-        <option value="50000">$50,000</option>
-        <option value="100000">$100,000</option>
-      </select>
+      <label>信号确认 <span class="val" id="v-sc">1个/1分钟内</span></label>
+      <div style="display:flex;gap:6px;align-items:center">
+        <select id="signal_confirm_minutes" style="width:70px" onchange="updateSignalConfirm()">
+          <option value="1" selected>1分钟</option>
+          <option value="3">3分钟</option>
+          <option value="5">5分钟</option>
+          <option value="10">10分钟</option>
+        </select>
+        <span style="font-size:11px;color:#8b949e">内</span>
+        <select id="signal_confirm_count" style="width:70px" onchange="updateSignalConfirm()">
+          <option value="1">1个</option>
+          <option value="2">2个</option>
+          <option value="3" selected>3个</option>
+          <option value="5">5个</option>
+        </select>
+      </div>
     </div>
     <div class="form-group">
-      <label>最低持有人比例 <span class="val" id="v-hr">不限</span></label>
-      <select id="min_holder_rate">
+      <label>代币创建时间 <span class="val" id="v-age">不限</span></label>
+      <div style="display:flex;gap:6px;align-items:center">
+        <select id="min_token_age_minutes" style="flex:1" onchange="updateAgeLabel()">
+          <option value="0" selected>不限 Min</option>
+          <option value="5">5 分钟</option>
+          <option value="10">10 分钟</option>
+          <option value="30">30 分钟</option>
+        </select>
+        <span style="font-size:11px;color:#8b949e">~</span>
+        <select id="max_token_age_hours" style="flex:1" onchange="updateAgeLabel()">
+          <option value="0" selected>不限 Max</option>
+          <option value="6">6 小时</option>
+          <option value="12">12 小时</option>
+          <option value="24">24 小时</option>
+          <option value="72">3 天</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>币种市值 <span class="val" id="v-mcap">不限</span></label>
+      <div style="display:flex;gap:6px;align-items:center">
+        <select id="min_market_cap_usd" style="flex:1" onchange="updateMcLabel()">
+          <option value="0" selected>不限 Min</option>
+          <option value="5000">$5,000</option>
+          <option value="10000">$10,000</option>
+          <option value="50000">$50,000</option>
+          <option value="100000">$100,000</option>
+        </select>
+        <span style="font-size:11px;color:#8b949e">~</span>
+        <select id="max_market_cap_usd" style="flex:1" onchange="updateMcLabel()">
+          <option value="0" selected>不限 Max</option>
+          <option value="100000">$100K</option>
+          <option value="500000">$500K</option>
+          <option value="1000000">$1M</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>持有人数量 <span class="val" id="v-hcount">不限</span></label>
+      <div style="display:flex;gap:6px;align-items:center">
+        <select id="min_holders" style="flex:1" onchange="updateHolderLabel()">
+          <option value="0" selected>不限 Min</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+          <option value="500">500</option>
+          <option value="1000">1000</option>
+        </select>
+        <span style="font-size:11px;color:#8b949e">~</span>
+        <select id="max_holders" style="flex:1" onchange="updateHolderLabel()">
+          <option value="0" selected>不限 Max</option>
+          <option value="1000">1,000</option>
+          <option value="5000">5,000</option>
+          <option value="10000">10,000</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>TOP持仓小于 <span class="val" id="v-hr">不限</span></label>
+      <select id="max_holder_rate" onchange="var v3=parseFloat(this.value);document.getElementById('v-hr').textContent=v3>0?(v3*100).toFixed(0)+'%':'不限'">
         <option value="0" selected>不限</option>
-        <option value="0.03">3%</option>
         <option value="0.05">5%</option>
         <option value="0.10">10%</option>
+        <option value="0.20">20%</option>
       </select>
     </div>
     <div class="form-group">
-      <label>代币最大创建时间 <span class="val" id="v-age">不限</span></label>
-      <select id="max_token_age_hours">
-        <option value="0" selected>不限</option>
-        <option value="6">6 小时内</option>
-        <option value="12">12 小时内</option>
-        <option value="24">24 小时内</option>
-        <option value="72">3 天内</option>
+      <label>运行时间段 <span class="val" id="v-runtime">全天</span></label>
+      <div style="display:flex;gap:6px;align-items:center">
+        <select id="runtime_start_hour" style="flex:1" onchange="updateRuntimeLabel()">
+          <option value="0" selected>00:00</option>
+          <option value="6">06:00</option>
+          <option value="8">08:00</option>
+          <option value="12">12:00</option>
+          <option value="18">18:00</option>
+          <option value="20">20:00</option>
+        </select>
+        <span style="font-size:11px;color:#8b949e">~</span>
+        <select id="runtime_end_hour" style="flex:1" onchange="updateRuntimeLabel()">
+          <option value="0" selected>24:00</option>
+          <option value="6">06:00</option>
+          <option value="8">08:00</option>
+          <option value="12">12:00</option>
+          <option value="18">18:00</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- 风险控制 -->
+    <div class="section-title">风险控制</div>
+    <div class="form-group">
+      <label>滑点 <span class="val" id="v-slp">30%</span></label>
+      <input type="range" id="slippage_pct" min="5" max="50" value="30" step="1" oninput="updateLabel(this,'v-slp','%')">
+    </div>
+    <div class="form-group">
+      <label>优先费 <span class="val" id="v-pfee">0.001 SOL</span></label>
+      <select id="priority_fee_sol" onchange="document.getElementById('v-pfee').textContent=parseFloat(this.value).toFixed(3)+' SOL'">
+        <option value="0.0001">0.0001 SOL</option>
+        <option value="0.001" selected>0.001 SOL</option>
+        <option value="0.005">0.005 SOL</option>
+        <option value="0.01">0.01 SOL</option>
       </select>
     </div>
     <div class="form-group">
-      <label>信号确认 <span class="val" id="v-sc">1 个信号</span></label>
-      <select id="signal_confirm_count">
-        <option value="1" selected>1 个信号 (不等待)</option>
-        <option value="2">2 个信号</option>
-        <option value="3">3 个信号</option>
+      <label>贿赂费 <span class="val" id="v-bribe">0.003 SOL</span></label>
+      <select id="bribe_fee_sol" onchange="document.getElementById('v-bribe').textContent=parseFloat(this.value).toFixed(3)+' SOL'">
+        <option value="0">无</option>
+        <option value="0.001">0.001 SOL</option>
+        <option value="0.003" selected>0.003 SOL</option>
+        <option value="0.005">0.005 SOL</option>
+        <option value="0.01">0.01 SOL</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>价格偏差 <span class="val" id="v-pdev">0%</span></label>
+      <select id="price_deviation_pct" onchange="document.getElementById('v-pdev').textContent=parseFloat(this.value).toFixed(0)+'%'">
+        <option value="0" selected>0%</option>
+        <option value="0.01">1%</option>
+        <option value="0.03">3%</option>
+        <option value="0.05">5%</option>
       </select>
     </div>
 
@@ -226,24 +349,71 @@ function updateLabel(el, labelId, suffix) {
     : el.value + suffix;
 }
 
+function updateSignalConfirm() {
+  const m = document.getElementById('signal_confirm_minutes').value;
+  const c = document.getElementById('signal_confirm_count').value;
+  document.getElementById('v-sc').textContent = c + '个/' + m + '分钟内';
+}
+function updateAgeLabel() {
+  const mn = document.getElementById('min_token_age_minutes');
+  const mx = document.getElementById('max_token_age_hours');
+  const minT = mn.value > 0 ? mn.options[mn.selectedIndex].text : 'Min不限';
+  const maxT = mx.value > 0 ? mx.options[mx.selectedIndex].text : 'Max不限';
+  document.getElementById('v-age').textContent = minT + ' ~ ' + maxT;
+}
+function updateMcLabel() {
+  const mn = document.getElementById('min_market_cap_usd');
+  const mx = document.getElementById('max_market_cap_usd');
+  const minT = mn.value > 0 ? mn.options[mn.selectedIndex].text : 'Min不限';
+  const maxT = mx.value > 0 ? mx.options[mx.selectedIndex].text : 'Max不限';
+  document.getElementById('v-mcap').textContent = minT + ' ~ ' + maxT;
+}
+function updateHolderLabel() {
+  const mn = document.getElementById('min_holders');
+  const mx = document.getElementById('max_holders');
+  const minT = mn.value > 0 ? mn.options[mn.selectedIndex].text : 'Min不限';
+  const maxT = mx.value > 0 ? mx.options[mx.selectedIndex].text : 'Max不限';
+  document.getElementById('v-hcount').textContent = minT + ' ~ ' + maxT;
+}
+function updateRuntimeLabel() {
+  const s = document.getElementById('runtime_start_hour');
+  const e = document.getElementById('runtime_end_hour');
+  const st = s.options[s.selectedIndex].text;
+  const et = e.options[e.selectedIndex].text;
+  document.getElementById('v-runtime').textContent = (s.value==='0' && e.value==='0') ? '全天' : st + ' ~ ' + et;
+}
+
 function getParams() {
   return {
+    buy_amount_sol: parseFloat(document.getElementById('buy_amount_sol').value),
+    max_buys_per_token: parseInt(document.getElementById('max_buys_per_token').value),
     take_profit: parseInt(document.getElementById('take_profit').value) / 100,
     stop_loss: parseInt(document.getElementById('stop_loss').value) / 100,
     max_hold_hours: parseInt(document.getElementById('max_hold_hours').value),
-    max_buys_per_token: parseInt(document.getElementById('max_buys_per_token').value),
-    min_liquidity_usd: parseFloat(document.getElementById('min_liquidity_usd').value),
-    min_holder_rate: parseFloat(document.getElementById('min_holder_rate').value),
-    max_token_age_hours: parseInt(document.getElementById('max_token_age_hours').value),
+    only_first_signal: document.getElementById('only_first_signal').checked,
+    signal_confirm_minutes: parseInt(document.getElementById('signal_confirm_minutes').value),
     signal_confirm_count: parseInt(document.getElementById('signal_confirm_count').value),
+    min_token_age_minutes: parseInt(document.getElementById('min_token_age_minutes').value),
+    max_token_age_hours: parseInt(document.getElementById('max_token_age_hours').value),
+    min_market_cap_usd: parseFloat(document.getElementById('min_market_cap_usd').value),
+    max_market_cap_usd: parseFloat(document.getElementById('max_market_cap_usd').value),
+    min_holders: parseInt(document.getElementById('min_holders').value),
+    max_holders: parseInt(document.getElementById('max_holders').value),
+    max_holder_rate: parseFloat(document.getElementById('max_holder_rate').value),
+    runtime_start_hour: parseInt(document.getElementById('runtime_start_hour').value),
+    runtime_end_hour: parseInt(document.getElementById('runtime_end_hour').value),
+    slippage_pct: parseFloat(document.getElementById('slippage_pct').value) / 100,
+    priority_fee_sol: parseFloat(document.getElementById('priority_fee_sol').value),
+    bribe_fee_sol: parseFloat(document.getElementById('bribe_fee_sol').value),
+    price_deviation_pct: parseFloat(document.getElementById('price_deviation_pct').value) / 100,
   };
 }
 
 const presets = {
-  conservative: { take_profit: 60, stop_loss: 3, max_hold_hours: 4, max_buys_per_token: 1, min_liquidity_usd: 50000, min_holder_rate: 0.05, max_token_age_hours: 24, signal_confirm_count: 2 },
-  moderate: { take_profit: 100, stop_loss: 5, max_hold_hours: 12, max_buys_per_token: 3, min_liquidity_usd: 10000, min_holder_rate: 0, max_token_age_hours: 0, signal_confirm_count: 1 },
-  aggressive: { take_profit: 200, stop_loss: 10, max_hold_hours: 24, max_buys_per_token: 3, min_liquidity_usd: 0, min_holder_rate: 0, max_token_age_hours: 0, signal_confirm_count: 1 },
-  scalp: { take_profit: 60, stop_loss: 5, max_hold_hours: 1, max_buys_per_token: 3, min_liquidity_usd: 0, min_holder_rate: 0, max_token_age_hours: 12, signal_confirm_count: 2 },
+  conservative: { take_profit: 60, stop_loss: 3, max_hold_hours: 4, max_buys_per_token: 1, max_token_age_hours: 24, signal_confirm_count: 2 },
+  moderate: { take_profit: 100, stop_loss: 5, max_hold_hours: 12, max_buys_per_token: 3, max_token_age_hours: 0, signal_confirm_count: 1 },
+  aggressive: { take_profit: 200, stop_loss: 10, max_hold_hours: 24, max_buys_per_token: 3, max_token_age_hours: 0, signal_confirm_count: 1 },
+  scalp: { take_profit: 60, stop_loss: 5, max_hold_hours: 1, max_buys_per_token: 3, max_token_age_hours: 12, signal_confirm_count: 2 },
 };
 
 document.getElementById('presets').addEventListener('click', e => {
@@ -255,11 +425,13 @@ document.getElementById('presets').addEventListener('click', e => {
     document.getElementById('stop_loss').value = p.stop_loss;
     document.getElementById('max_hold_hours').value = p.max_hold_hours;
     document.getElementById('max_buys_per_token').value = p.max_buys_per_token;
-    document.getElementById('min_liquidity_usd').value = p.min_liquidity_usd;
-    document.getElementById('min_holder_rate').value = p.min_holder_rate;
     document.getElementById('max_token_age_hours').value = p.max_token_age_hours;
     document.getElementById('signal_confirm_count').value = p.signal_confirm_count;
-    document.querySelectorAll('#presets ~ .form-group select, .form-group input[type=range]').forEach(f => f.dispatchEvent(new Event('input')));
+    ['take_profit','stop_loss','max_hold_hours','max_buys_per_token','max_token_age_hours','signal_confirm_count'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.dispatchEvent(new Event(id === 'take_profit' ? 'input' : 'change'));
+    });
+    updateAgeLabel(); updateSignalConfirm();
   }
 });
 
@@ -364,7 +536,7 @@ function showGridResult(data, dur) {
     return;
   }
 
-  let html = '<table><thead><tr><th>#</th><th>止盈</th><th>止损</th><th>持仓</th><th>单币买</th><th>流动性</th><th>信号确认</th><th>交易</th><th>胜率</th><th>收益</th><th>盈亏$</th><th>盈亏比</th><th>回撤</th></tr></thead><tbody>';
+  let html = '<table><thead><tr><th>#</th><th>止盈</th><th>止损</th><th>持仓</th><th>单币买</th><th>确认</th><th>市值Min</th><th>交易</th><th>胜率</th><th>收益</th><th>盈亏$</th><th>盈亏比</th><th>回撤</th></tr></thead><tbody>';
   strategies.forEach((r,i) => {
     const p = r.params;
     const cls = r.total_profit_pct >= 0 ? 'profit-pos' : 'profit-neg';
@@ -374,8 +546,8 @@ function showGridResult(data, dur) {
       <td>${(p.stop_loss*100).toFixed(0)}%</td>
       <td>${p.max_hold_hours}h</td>
       <td>${p.max_buys_per_token}</td>
-      <td>${p.min_liquidity_usd > 0 ? '$'+(p.min_liquidity_usd/1000).toFixed(0)+'k' : '不限'}</td>
       <td>${p.signal_confirm_count || 1}个</td>
+      <td>${(p.min_market_cap_usd||0) > 0 ? '$'+(p.min_market_cap_usd/1000).toFixed(0)+'k' : '不限'}</td>
       <td>${r.total_trades}</td>
       <td>${(r.win_rate*100).toFixed(1)}%</td>
       <td class="${cls}">${(r.total_profit_pct*100).toFixed(2)}%</td>

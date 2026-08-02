@@ -1,34 +1,112 @@
 """
 策略报告生成器
 - 从 best_strategy_config 读取当前最优策略
-- 生成对齐 Debot 跟单页面的参数报告
-- 回测完成后手动填入 Debot: https://docs.debot.ai/basic-features/xin-hao-gen-dan
+- 生成对齐 Debot「创建跟单」页面的参数报告，直接照填
 """
 import json
 import logging
 
 from db import get_conn, get_active_strategy
-from backtest_engine import BUY_AMOUNT_SOL, BUY_AMOUNT_USD
 
 logger = logging.getLogger("strategy_report")
 
-# Debot 跟单页面字段 → 回测参数映射
-# 用于生成"照填"报告
+# Debot「创建跟单」页面字段 → 回测参数映射 (按表单分区排列)
 FIELD_LABELS = {
-    "max_buys_per_token": "单币最大买入次数",
-    "take_profit": "止盈阈值(涨幅)",
-    "stop_loss": "止损阈值(跌幅)",
+    # -- 基础设置 --
+    "buy_amount_sol": "买入金额(SOL)",
+
+    # -- 买入策略 --
+    "max_buys_per_token": "买入次数(每币)",
+
+    # -- 卖出策略 --
+    "take_profit": "止盈(价格涨幅倍数)",
+    "stop_loss": "止损(价格跌幅)",
     "max_hold_hours": "最长持仓时间",
-    "min_liquidity_usd": "最低流动性(USD)",
-    "min_holder_rate": "最低持有人比例",
-    "max_token_age_hours": "代币最大创建时间(h, 0=不限)",
-    "signal_confirm_count": "信号确认数(N分钟内)",
-    "signal_confirm_minutes": "信号确认窗口(分钟)",
+
+    # -- 高级过滤 --
+    "only_first_signal": "只跟首次信号",
+    "signal_confirm_minutes": "信号确认(分钟)",
+    "signal_confirm_count": "信号确认(个数)",
+    "min_token_age_minutes": "代币创建时间 Min(分钟)",
+    "max_token_age_hours": "代币创建时间 Max(小时)",
+    "min_market_cap_usd": "币种市值 Min(USD)",
+    "max_market_cap_usd": "币种市值 Max(USD)",
+    "min_holders": "持有人 Min",
+    "max_holders": "持有人 Max",
+    "max_holder_rate": "TOP持仓小于",
+    "runtime_start_hour": "运行开始(时)",
+    "runtime_end_hour": "运行结束(时)",
+
+    # -- 风险控制 --
+    "slippage_pct": "滑点",
+    "priority_fee_sol": "优先费(SOL)",
+    "bribe_fee_sol": "贿赂费(SOL)",
+    "price_deviation_pct": "价格偏差",
 }
+
+SECTION_ORDER = [
+    ("基础设置", ["buy_amount_sol"]),
+    ("买入策略", ["max_buys_per_token"]),
+    ("卖出策略", ["take_profit", "stop_loss", "max_hold_hours"]),
+    ("高级过滤", ["only_first_signal", "signal_confirm_minutes", "signal_confirm_count",
+                   "min_token_age_minutes", "max_token_age_hours",
+                   "min_market_cap_usd", "max_market_cap_usd",
+                   "min_holders", "max_holders", "max_holder_rate",
+                   "runtime_start_hour", "runtime_end_hour"]),
+    ("风险控制", ["slippage_pct", "priority_fee_sol", "bribe_fee_sol", "price_deviation_pct"]),
+]
+
+
+def format_value(key: str, val) -> str:
+    """格式化参数值为人读形式"""
+    if val is None or val == "":
+        return "不限" if "max" in key or key.endswith("_hours") else ""
+
+    if key in ("take_profit", "stop_loss", "slippage_pct", "price_deviation_pct", "max_holder_rate"):
+        if isinstance(val, bool):
+            return "是" if val else "否"
+        if isinstance(val, (int, float)) and val > 0:
+            return f"{val * 100:.0f}%" if val < 1 else f"{val:.0f}%"
+        return str(val)
+
+    if key == "only_first_signal":
+        return "是" if val else "否"
+
+    if key == "buy_amount_sol":
+        return f"{val} SOL" if isinstance(val, (int, float)) else str(val)
+
+    if key == "max_hold_hours":
+        return f"{val}h" if val else "不限"
+
+    if key == "max_token_age_hours":
+        return f"{val}h" if val else "不限"
+
+    if key == "min_token_age_minutes":
+        return f"{val}分钟" if val else "不限"
+
+    if key in ("min_market_cap_usd", "max_market_cap_usd"):
+        if isinstance(val, (int, float)) and val > 0:
+            if val >= 1e6:
+                return f"${val/1e6:.1f}M"
+            return f"${val/1e3:.0f}K"
+        return "不限"
+
+    if key in ("runtime_start_hour", "runtime_end_hour"):
+        if isinstance(val, (int, float)):
+            v = int(val) if val else 0
+            return f"{v}:00"
+        return str(val)
+
+    if key in ("priority_fee_sol", "bribe_fee_sol"):
+        if isinstance(val, (int, float)):
+            return f"{val:.3f} SOL" if val > 0 else "无"
+        return str(val)
+
+    return str(val)
 
 
 def format_report(active: dict) -> dict:
-    """将数据库策略记录转为 Debot 跟单报告"""
+    """将数据库策略记录转为 Debot 跟单报告，按分区排列"""
     if not active:
         return {}
 
@@ -36,29 +114,18 @@ def format_report(active: dict) -> dict:
     if isinstance(params, str):
         params = json.loads(params)
 
-    debot_config = {}
-    # 每次买入数量是固定值，不参与回测搜索
-    debot_config["每次买入数量"] = f"{BUY_AMOUNT_SOL} SOL (≈${BUY_AMOUNT_USD:.2f})"
-    for key, label in FIELD_LABELS.items():
-        val = params.get(key, "")
-        if key in ("take_profit", "stop_loss", "min_holder_rate"):
-            val = f"{val * 100:.0f}%" if isinstance(val, (int, float)) else val
-        elif key == "min_liquidity_usd":
-            val = f"${val:,.0f}" if isinstance(val, (int, float)) and val > 0 else "不限"
-        elif key == "max_hold_hours":
-            val = f"{val}h" if val else val
-        elif key == "max_token_age_hours":
-            val = f"{val}h" if val else "不限"
-        elif key == "signal_confirm_count":
-            val = f"{val} 个信号" if val else val
-        elif key == "signal_confirm_minutes":
-            val = f"{val} 分钟内" if val else val
-        elif key == "max_buys_per_token":
-            val = f"{val} 次" if val else val
-        debot_config[label] = str(val)
+    sections = []
+    for section_name, keys in SECTION_ORDER:
+        items = []
+        for key in keys:
+            label = FIELD_LABELS.get(key, key)
+            val = format_value(key, params.get(key))
+            items.append((label, val))
+        sections.append({"section": section_name, "items": items})
 
     return {
-        "debot_config": debot_config,
+        "sections": sections,
+        "params_raw": params,
         "backtest_stats": {
             "胜率": f"{float(active.get('win_rate', 0)) * 100:.1f}%",
             "累计收益": f"{float(active.get('backtest_profit', 0)) * 100:+.1f}%",
@@ -86,11 +153,12 @@ def run_sync() -> dict:
         report = format_report(active)
 
         logger.info("=" * 40)
-        logger.info("Debot 跟单配置 (照填)")
+        logger.info("Debot 跟单配置 (按表单分区照填)")
+        for section in report["sections"]:
+            logger.info(f"--- {section['section']} ---")
+            for label, val in section["items"]:
+                logger.info(f"  {label}: {val}")
         logger.info("=" * 40)
-        for key, val in report["debot_config"].items():
-            logger.info(f"  {key}: {val}")
-        logger.info("---")
         for key, val in report["backtest_stats"].items():
             logger.info(f"  {key}: {val}")
         logger.info("=" * 40)

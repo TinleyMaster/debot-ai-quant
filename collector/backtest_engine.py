@@ -2,8 +2,8 @@
 回测运算引擎
 - 读取历史信号 + 行情快照，模拟 Debot 跟单实盘交易
 - 参数网格搜索最优跟单配置
-- 参数对齐 Debot 信号跟单页面字段:
-  https://docs.debot.ai/basic-features/xin-hao-gen-dan
+- 参数完全对齐 Debot「创建跟单」页面字段:
+  基础设置 / 买入策略 / 卖出策略 / 高级过滤 / 风险控制
 """
 import os
 import json
@@ -24,26 +24,50 @@ logger = logging.getLogger("backtest")
 
 
 # ============================================================
-# 回测参数定义 — 对齐 Debot 跟单页面字段
+# 回测参数定义 — 完全对齐 Debot「创建跟单」页面
 # ============================================================
 
 @dataclass
 class BacktestParams:
-    """单组回测参数，字段名对应 Debot 跟单配置"""
+    """单组回测参数，字段名一一对应 Debot 跟单配置"""
+
+    # -- 基础设置 --
+    buy_amount_sol: float = 1.0         # 买入金额(SOL) — Debot: 买入金额
+
+    # -- 买入策略 --
+    max_buys_per_token: int = 1         # 单币最大买入次数(0=不限) — Debot: 买入次数
+
     # -- 卖出策略 --
-    take_profit: float = 0.5             # 止盈阈值(价格涨幅) — Debot: 止盈止损
-    stop_loss: float = 0.10              # 止损阈值(价格跌幅) — Debot: 止盈止损
-    max_hold_hours: int = 8              # 最长持仓小时(超时自动卖出) — 隐含风控
+    take_profit: float = 1.0            # 止盈阈值(价格涨幅倍数) — Debot: 止盈止损(翻倍出本)
+    stop_loss: float = 0.10             # 止损阈值(价格跌幅) — Debot: 止盈止损
+    max_hold_hours: int = 8             # 最长持仓小时(超时自动卖出)
 
-    # -- 过滤维度 --
-    max_buys_per_token: int = 1          # 单币最大买入次数 — Debot: 单币最大买入次数
-    min_liquidity_usd: float = 0         # 最低流动性 — Debot: 币种市值范围(下限)
-    min_holder_rate: float = 0           # 最低持有人比例 — Debot: 持有人数量(代理)
-    max_token_age_hours: int = 0         # 代币最大创建时间(0=不限) — Debot: 代币创建时间
+    # -- 高级过滤: 信号确认 --
+    signal_confirm_minutes: int = 1     # 时间窗口(分钟) — Debot: 几分钟几个信号
+    signal_confirm_count: int = 3       # 窗口内信号数 — Debot: 几分钟几个信号
+    only_first_signal: bool = False     # 只跟首次信号 — Debot: 只跟首次信号
 
-    # -- 信号确认 --
-    signal_confirm_count: int = 1        # 几分钟内出现N个信号才跟单 — Debot: 几分钟几个信号
-    signal_confirm_minutes: int = 5      # 信号确认时间窗口 — Debot: 几分钟几个信号
+    # -- 高级过滤: 代币筛选 --
+    min_token_age_minutes: int = 0      # 代币最小创建时间(0=不限) — Debot: 代币创建时间 Min
+    max_token_age_hours: int = 0        # 代币最大创建时间(0=不限) — Debot: 代币创建时间 Max
+    min_market_cap_usd: float = 0       # 最低市值 — Debot: 币种市值 Min
+    max_market_cap_usd: float = 0       # 最高市值(0=不限) — Debot: 币种市值 Max
+    min_holders: int = 0                # 最低持有人数 — Debot: 持有人 Min
+    max_holders: int = 0                # 最高持有人数(0=不限) — Debot: 持有人 Max
+    max_holder_rate: float = 0          # 最高TOP持仓比例(0=不限) — Debot: TOP持仓小于
+
+    # -- 高级过滤: 时间 --
+    runtime_start_hour: int = 0         # 运行开始(小时) — Debot: 运行时间段 开始
+    runtime_end_hour: int = 0           # 运行结束(小时,0=24点) — Debot: 运行时间段 结束
+
+    # -- 风险控制 --
+    slippage_pct: float = 0.30          # 滑点 — Debot: 滑点
+    priority_fee_sol: float = 0.001     # 优先费(SOL) — Debot: 优先费
+    bribe_fee_sol: float = 0.003        # 贿赂费(SOL) — Debot: 贿赂费
+    price_deviation_pct: float = 0.0    # 价格偏差 — Debot: 价格偏差
+
+    # -- 固定参考价 (用于展示，非网格搜索维度) --
+    sol_price_usd: float = 150.0        # SOL 参考价
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -52,41 +76,48 @@ class BacktestParams:
     def label(self) -> str:
         return (f"tp{self.take_profit}_sl{self.stop_loss}"
                 f"_h{self.max_hold_hours}_b{self.max_buys_per_token}"
-                f"_liq{int(self.min_liquidity_usd)}_sc{self.signal_confirm_count}")
+                f"_sc{self.signal_confirm_count}")
 
 
-# 参数网格定义（buy_amount_usd 不参与搜索，用户自行决定单笔金额）
+# 参数网格定义
 PARAM_GRID = {
-    "take_profit": [0.6, 1.0, 2.0],    # 20%双向滑点下盈亏平衡≈54%，故至少60%起
+    # -- 卖出策略 --
+    "take_profit": [0.6, 1.0, 2.0],
     "stop_loss": [0.03, 0.05, 0.10],
-    "max_hold_hours": [0.5, 1, 4, 24],
+    "max_hold_hours": [1, 4, 24],
+
+    # -- 买入策略 --
     "max_buys_per_token": [1, 3],
-    "min_liquidity_usd": [0, 10000],
-    "min_holder_rate": [0, 0.05],
+
+    # -- 信号确认 --
+    "signal_confirm_count": [1, 3],
+    "signal_confirm_minutes": [1, 5],
+    "only_first_signal": [False, True],
+
+    # -- 代币筛选 --
+    "min_token_age_minutes": [0, 10],
     "max_token_age_hours": [0, 24],
-    "signal_confirm_count": [1, 2],
+    "min_market_cap_usd": [0, 10000],
+    "max_market_cap_usd": [0, 500000],
+    "min_holders": [0, 100],
+    "max_holders": [0, 5000],
+    "max_holder_rate": [0, 0.10],
+
+    # -- 时间 --
+    "runtime_start_hour": [0],
+    "runtime_end_hour": [0, 6],
+
+    # -- 风险控制 (大多数策略共享默认值，不在网格中展开) --
+    "slippage_pct": [0.30],
+    "priority_fee_sol": [0.001],
+    "bribe_fee_sol": [0.003],
+    "price_deviation_pct": [0.0],
 }
 
-# ---- 交易成本模型 ----
-# 模拟真实链上交易的全部摩擦成本
+# ---- 交易成本常量 ----
 
-BUY_AMOUNT_SOL = 0.1             # 每次买入数量(SOL)，用户实际跟单金额
-SOL_PRICE_USD = 150.0            # SOL 参考价
-BUY_AMOUNT_USD = BUY_AMOUNT_SOL * SOL_PRICE_USD  # 折算 USD (≈$15.00)
-
-# 滑点 — 土狗币流动性低，20% 滑点更贴近实盘
-ENTRY_SLIPPAGE = 0.20            # 买入滑点 20%（实际成交价高于报价）
-EXIT_SLIPPAGE = 0.20             # 卖出滑点 20%（实际成交价低于报价）
-
-# DEX 交易手续费 — Solana AMM 典型费率 (Raydium/Orca)
-DEX_FEE = 0.0025                 # 0.25% 交易手续费，买卖各收一次
-
-# Gas + 优先费 — Debot: 优先费
-PRIORITY_FEE_SOL = 0.001         # 优先费 ~0.001 SOL (~$0.15)，加速上链
+DEX_FEE = 0.0025                 # 0.25% DEX 交易手续费，买卖各收一次
 BASE_GAS_SOL = 0.000005          # 基础 Gas ~0.000005 SOL
-
-# 单笔交易固定成本 (SOL) = (优先费 + 基础Gas) × 2 (买卖各一次)
-FIXED_COST_SOL_PER_TRADE = (PRIORITY_FEE_SOL + BASE_GAS_SOL) * 2
 
 INITIAL_PORTFOLIO_USD = 10000    # 回测初始资金(用于计算回撤比例)
 
@@ -225,7 +256,7 @@ class BacktestEngine:
 
     def _is_signal_confirmed(self, signal: dict, confirm_index: dict,
                              params: BacktestParams) -> bool:
-        """检查信号是否满足确认条件"""
+        """检查信号是否满足确认条件(时间窗口 + 数量)"""
         if params.signal_confirm_count <= 1:
             return True
         addr = signal["contract_address"]
@@ -234,6 +265,21 @@ class BacktestEngine:
             t = datetime.fromisoformat(t.replace("Z", "+00:00"))
         count = confirm_index.get(addr, {}).get(t, 1)
         return count >= params.signal_confirm_count
+
+    def _is_in_runtime(self, signal_time, params: BacktestParams) -> bool:
+        """检查信号时间是否在运行时间段内"""
+        if params.runtime_start_hour == 0 and params.runtime_end_hour == 0:
+            return True
+        if isinstance(signal_time, str):
+            signal_time = datetime.fromisoformat(signal_time.replace("Z", "+00:00"))
+        h = signal_time.hour
+        start, end = params.runtime_start_hour, params.runtime_end_hour
+        if end == 0:
+            end = 24
+        if start <= end:
+            return start <= h < end
+        else:
+            return h >= start or h < end
 
     # ---- 参数网格 ----
 
@@ -285,8 +331,22 @@ class BacktestEngine:
 
         # 跟踪每个代币已买入次数
         token_buy_count = defaultdict(int)
+        # 只跟首次信号：已跟过的代币
+        followed_addrs = set()
 
         for signal in self.signals:
+            addr = signal["contract_address"]
+
+            # 只跟首次信号过滤
+            if params.only_first_signal:
+                if addr in followed_addrs:
+                    continue
+                followed_addrs.add(addr)
+
+            # 运行时间段过滤
+            if not self._is_in_runtime(signal["signal_time"], params):
+                continue
+
             # 信号确认过滤
             if not self._is_signal_confirmed(signal, confirm_index, params):
                 continue
@@ -350,7 +410,7 @@ class BacktestEngine:
 
     def _simulate_trade(self, signal: dict, params: BacktestParams,
                         token_buy_count: dict) -> TradeResult | None:
-        """模拟单笔交易，应用所有 Debot 过滤条件"""
+        """模拟单笔交易，应用所有 Debot 过滤条件 + 动态成本模型"""
         contract = signal["contract_address"]
         signal_time = signal["signal_time"]
         if isinstance(signal_time, str):
@@ -361,9 +421,9 @@ class BacktestEngine:
         if token_buy_count.get(contract, 0) >= params.max_buys_per_token:
             return None
 
-        # -- 持有人比例过滤 --
+        # -- TOP持仓过滤 (Debot: TOP持仓小于 X%) --
         holder_rate = signal.get("holder_rate") or 0
-        if holder_rate < params.min_holder_rate:
+        if params.max_holder_rate > 0 and holder_rate > params.max_holder_rate:
             return None
 
         # 获取行情快照
@@ -372,8 +432,7 @@ class BacktestEngine:
             return None
         snap_list.sort(key=lambda s: s["snapshot_time"])
 
-        # 信号发出后至少延迟 60s 作为入场时间，模拟看信号→决策→链上执行的延迟
-        # 土狗币行情变化极快，1-3 分钟后的价格才是真实买入价
+        # 信号发出后至少延迟 60s 作为入场时间
         min_entry_time = signal_time + timedelta(seconds=60)
         entry_snap = None
         for snap in snap_list:
@@ -381,37 +440,53 @@ class BacktestEngine:
                 entry_snap = snap
                 break
         if entry_snap is None:
-            # 没有延迟后的快照（数据尚未积累），用最后一个可用快照
             entry_snap = snap_list[-1]
 
         raw_entry_price = entry_snap.get("price_usd") or 0
         if raw_entry_price <= 0:
             return None
 
-        # -- 流动性过滤 (市值范围) --
-        liquidity = entry_snap.get("liquidity_usd") or 0
-        if liquidity < params.min_liquidity_usd:
+        # -- 市值范围过滤 (Debot: 币种市值 Min/Max) --
+        market_cap = entry_snap.get("market_cap_usd") or entry_snap.get("fdv_usd") or 0
+        if params.min_market_cap_usd > 0 and market_cap < params.min_market_cap_usd:
+            return None
+        if params.max_market_cap_usd > 0 and market_cap > params.max_market_cap_usd:
             return None
 
-        # -- 代币创建时间过滤 --
-        if params.max_token_age_hours > 0:
-            pair_created = entry_snap.get("pair_created_at")
-            if pair_created:
-                if isinstance(pair_created, str):
-                    pair_created = datetime.fromisoformat(pair_created.replace("Z", "+00:00"))
-                st = signal_time.replace(tzinfo=None) if signal_time.tzinfo else signal_time
-                pc = pair_created.replace(tzinfo=None) if pair_created.tzinfo else pair_created
-                token_age = st - pc
-                if token_age.total_seconds() / 3600 > params.max_token_age_hours:
-                    return None
+        # -- 持有人数过滤 (Debot: 持有人 Min/Max) --
+        holders = entry_snap.get("holders") or 0
+        if params.min_holders > 0 and holders < params.min_holders:
+            return None
+        if params.max_holders > 0 and holders > params.max_holders:
+            return None
 
-        # ---- 费用模型：模拟真实链上交易成本 ----
-        # 买入实际成交价 = 报价 × (1 + 买入滑点 + DEX手续费)
-        entry_price = raw_entry_price * (1 + ENTRY_SLIPPAGE + DEX_FEE)
-        # 固定成本 $ = 单笔成本(SOL) × SOL价格
-        fixed_cost_usd = FIXED_COST_SOL_PER_TRADE * SOL_PRICE_USD
+        # -- 代币创建时间过滤 (Debot: 代币创建时间 Min/Max) --
+        pair_created = entry_snap.get("pair_created_at")
+        if pair_created:
+            if isinstance(pair_created, str):
+                pair_created = datetime.fromisoformat(pair_created.replace("Z", "+00:00"))
+            st = signal_time.replace(tzinfo=None) if signal_time.tzinfo else signal_time
+            pc = pair_created.replace(tzinfo=None) if pair_created.tzinfo else pair_created
+            token_age_seconds = (st - pc).total_seconds()
+            token_age_minutes = token_age_seconds / 60
+            if params.min_token_age_minutes > 0 and token_age_minutes < params.min_token_age_minutes:
+                return None
+            if params.max_token_age_hours > 0 and token_age_seconds / 3600 > params.max_token_age_hours:
+                return None
 
-        # 模拟持仓过程（用裸报价判断止盈止损方向）
+        # ---- 动态成本模型 (来自参数配置) ----
+        # 买入实际成交价 = 报价 × (1 + 滑点 + 价格偏差 + DEX手续费)
+        effective_slippage = params.slippage_pct + params.price_deviation_pct
+        entry_price = raw_entry_price * (1 + effective_slippage + DEX_FEE)
+
+        # 固定成本 SOL = (优先费 + 贿赂费 + 基础Gas) × 2 (买卖各一次)
+        fixed_cost_sol = (params.priority_fee_sol + params.bribe_fee_sol + BASE_GAS_SOL) * 2
+        fixed_cost_usd = fixed_cost_sol * params.sol_price_usd
+
+        # 买入金额 USD
+        buy_amount_usd = params.buy_amount_sol * params.sol_price_usd
+
+        # 模拟持仓过程
         max_hold = timedelta(hours=params.max_hold_hours)
         raw_exit_price = raw_entry_price
         exit_reason = "timeout"
@@ -430,7 +505,6 @@ class BacktestEngine:
             if snap_price <= 0:
                 continue
 
-            # 裸报价变动（不扣费）→ 判断止盈止损方向
             raw_change = (snap_price - raw_entry_price) / raw_entry_price
 
             if raw_change >= params.take_profit:
@@ -448,13 +522,13 @@ class BacktestEngine:
             raw_exit_price = snap_price
             exit_snap_time = snap_time
 
-        # 卖出实际成交价 = 报价 × (1 - 卖出滑点 - DEX手续费)
-        exit_price = raw_exit_price * (1 - EXIT_SLIPPAGE - DEX_FEE)
+        # 卖出实际成交价 = 报价 × (1 - 滑点 - 价格偏差 - DEX手续费)
+        exit_price = raw_exit_price * (1 - effective_slippage - DEX_FEE)
 
-        # ---- 计算净盈亏（含全部摩擦成本） ----
+        # ---- 计算净盈亏 ----
         net_profit_pct = (exit_price - entry_price) / entry_price
-        profit_usd = BUY_AMOUNT_USD * net_profit_pct - fixed_cost_usd
-        net_profit_pct = profit_usd / BUY_AMOUNT_USD
+        profit_usd = buy_amount_usd * net_profit_pct - fixed_cost_usd
+        net_profit_pct = profit_usd / buy_amount_usd
 
         hold_hours = (exit_snap_time - entry_snap["snapshot_time"]).total_seconds() / 3600
 
