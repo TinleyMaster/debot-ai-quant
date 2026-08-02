@@ -356,10 +356,18 @@ class DebotScraper:
         return signals
 
     def _parse_single_card(self, card) -> Optional[dict]:
-        """解析单个信号卡片，提取所有字段"""
+        """解析单个信号卡片，提取所有字段
+        
+        Debot 当前布局: 每个卡片是一个 <a> 标签，innerText 包含:
+          代币名
+          +1.12%          (价格变化)
+          MC              
+          $17.7M          (市值)
+          TXs
+          172/638         (买入/卖出笔数)
+          #1              (排名)
+        """
         signal = {}
-
-        # 判断 card 类型：如果是 <a> 链接，从 href 提取合约地址
         tag_name = card.evaluate("el => el.tagName.toLowerCase()")
         is_link = (tag_name == "a")
 
@@ -367,13 +375,53 @@ class DebotScraper:
             href = card.get_attribute("href") or ""
             contract = self._extract_contract_from_url(href)
             signal["contract_address"] = contract
-            raw_text = card.inner_text().strip()
-            lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
-            signal["token_symbol"] = lines[0][:128] if lines else ""
             signal["source_url"] = href if href.startswith("http") else f"{self.base_url}{href}"
 
-            # 获取完整表格行/卡片容器 (包含所有 td 的文本)
-            container = self._find_signal_container(card)
+            # 用 <a> 标签自身的 innerText (卡片内全部可见文本)
+            raw_text = card.inner_text().strip()
+            lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
+
+            signal["token_symbol"] = lines[0][:128] if lines else ""
+
+            # 解析结构化数据: MC(市值), 价格变化等
+            signal["pool_value"] = None   # 市值/MC
+            signal["holder_rate"] = None  # 暂不可用
+            signal["signal_content"] = ""
+            signal["signal_time"] = None
+
+            i = 1
+            while i < len(lines):
+                line = lines[i]
+                upper = line.upper().strip()
+
+                # MC / Market Cap
+                if upper in ("MC", "MARKET CAP", "MKT CAP", "LIQ", "LIQUIDITY") and i + 1 < len(lines):
+                    signal["pool_value"] = self._parse_number(lines[i + 1])
+                    i += 2
+                    continue
+
+                # 价格变化百分比
+                if line.startswith("+") or line.startswith("-"):
+                    if "%" in line:
+                        # 这是价格变化，不是 holder_rate，但我们先存着
+                        signal["signal_content"] = f"24h: {line}"
+                    i += 1
+                    continue
+
+                # 排名
+                if line.startswith("#") and line[1:].isdigit():
+                    signal["signal_content"] = (signal["signal_content"] + f" 排名: {line}").strip()
+                    i += 1
+                    continue
+
+                # TXs / Transactions
+                if upper in ("TXS", "TX", "TRANSACTIONS") and i + 1 < len(lines):
+                    signal["signal_content"] = (signal["signal_content"] + f" TXs: {lines[i+1]}").strip()
+                    i += 2
+                    continue
+
+                i += 1
+
         else:
             container = card
             contract = self._safe_extract_text_in_element(card, self.selectors.get("contract_address", ""))
@@ -381,84 +429,21 @@ class DebotScraper:
             signal["token_symbol"] = self._safe_extract_text_in_element(card, self.selectors.get("token_symbol", ""))
             signal["source_url"] = self._safe_extract_href_in_element(card, self.selectors.get("source_url", ""))
 
-        # 获取容器的全部文本内容，用于兜底正则提取
-        try:
-            container_text = container.inner_text().strip()
-        except Exception:
-            container_text = ""
+            raw_text = card.inner_text().strip()
+            time_text = self._safe_extract_text_in_element(card, self.selectors.get("signal_time", ""))
+            signal["signal_time"] = self._parse_time(time_text)
 
-        # 保存第一个卡片的 HTML 用于调试
-        if not getattr(self, '_debug_card_logged', False):
-            self._debug_card_logged = True
-            try:
-                outer = container.evaluate("el => el.outerHTML.substring(0,8000)")
-                logger.info(f"[DEBUG] 容器标签: {container.evaluate('el => el.tagName')}")
-                logger.info(f"[DEBUG] 容器 class: {container.evaluate('el => el.className')}")
-                logger.info(f"[DEBUG] 容器子元素数: {container.evaluate('el => el.children.length')}")
-                logger.info(f"[DEBUG] 容器全文 (1000字符): {container_text[:1000]}")
-                debug_path = "/app/data/card_debug.html"
-                with open(debug_path, "w", encoding="utf-8") as f:
-                    f.write(outer)
-                logger.info(f"[DEBUG] 卡片 HTML (8000字符) 已保存到: {debug_path}")
-            except Exception as e:
-                logger.warning(f"[DEBUG] 保存卡片调试信息失败: {e}")
+            pool_text = self._safe_extract_text_in_element(card, self.selectors.get("pool_value", ""))
+            signal["pool_value"] = self._parse_number(pool_text) or self._extract_pool_value_from_text(raw_text)
 
-        # 信号时间
-        time_text = self._safe_extract_text_in_element(container, self.selectors.get("signal_time", ""))
-        signal["signal_time"] = self._parse_time(time_text)
+            holder_text = self._safe_extract_text_in_element(card, self.selectors.get("holder_rate", ""))
+            signal["holder_rate"] = self._parse_percentage(holder_text) or self._extract_holder_rate_from_text(raw_text)
 
-        # 流动池 — 优先用 CSS 选择器，失败则从文本正则匹配 $xxx 金额
-        pool_text = self._safe_extract_text_in_element(container, self.selectors.get("pool_value", ""))
-        signal["pool_value"] = self._parse_number(pool_text)
-        if signal["pool_value"] is None and container_text:
-            signal["pool_value"] = self._extract_pool_value_from_text(container_text)
-
-        # 大户持仓占比 — 优先 CSS, 失败则正则匹配 xx%
-        holder_text = self._safe_extract_text_in_element(container, self.selectors.get("holder_rate", ""))
-        signal["holder_rate"] = self._parse_percentage(holder_text)
-        if signal["holder_rate"] is None and container_text:
-            signal["holder_rate"] = self._extract_holder_rate_from_text(container_text)
-
-        # 信号文案
-        signal["signal_content"] = self._safe_extract_text_in_element(container, self.selectors.get("signal_content", ""))
-        if not signal["signal_content"] and container_text:
-            signal["signal_content"] = self._extract_signal_content_from_text(container_text, signal.get("token_symbol", ""))
+            signal["signal_content"] = self._safe_extract_text_in_element(card, self.selectors.get("signal_content", ""))
+            if not signal["signal_content"]:
+                signal["signal_content"] = self._extract_signal_content_from_text(raw_text, signal.get("token_symbol", ""))
 
         return signal
-
-    def _find_signal_container(self, card):
-        """从 <a> 链接向上查找完整的卡片容器
-        
-        Debot 页面使用 MUI Stack 布局，合约链接 (<a>) 只含 logo，
-        pool_value/holder_rate/signal_content 在兄弟 div 中。
-        需要拿到父级 MuiStack-root 才能获取全部文本。
-        """
-        # 第一优先：找 MUI Stack 容器（Debot 实际使用的布局）
-        for sel in [
-            '[class*="MuiStack-root"]',        # Debot 信号卡片行
-            'tr', '[class*="MuiTableRow"]',    # 备用：表格布局
-            '[class*="MuiGrid"]',              # Grid 布局
-        ]:
-            try:
-                el = card.evaluate_handle(f"el => el.closest('{sel}')")
-                if el:
-                    result = el.as_element()
-                    if result:
-                        return result
-            except Exception:
-                continue
-
-        # 兜底：向上遍历最多 3 层找多子元素父节点
-        try:
-            parent = card.evaluate_handle("el => { let p = el.parentElement; for(let i=0; i<3 && p; i++) { if(p.children.length >= 3) return p; p = p.parentElement; } return el.parentElement; }")
-            if parent:
-                result = parent.as_element()
-                if result:
-                    return result
-        except Exception:
-            pass
-
-        return card
 
     # ================================================================
     # 文本正则兜底提取 (选择器失败时的后备方案)

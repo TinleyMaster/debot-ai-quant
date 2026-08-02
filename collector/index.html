@@ -497,20 +497,19 @@ function renderSignalTable(signals) {
   }
   const now = new Date();
   let html = `<div style="font-size:11px;color:#8b949e;margin-bottom:8px">共 ${signals.length} 条信号 · 自动刷新中</div>`;
-  html += '<table id="signal-table"><thead><tr><th>时间</th><th>代币</th><th>合约</th><th>池子价值</th><th>持有人%</th><th>内容</th></tr></thead><tbody>';
+  html += '<table id="signal-table"><thead><tr><th>时间</th><th>代币</th><th>合约</th><th>市值</th><th>信号信息</th></tr></thead><tbody>';
   signals.forEach(s => {
     const sigTime = s.signal_time ? new Date(s.signal_time) : null;
     const age = sigTime ? Math.floor((now - sigTime) / 60000) : '?';
     const ageStr = age < 1 ? '刚刚' : age < 60 ? `${age}分钟前` : age < 1440 ? `${Math.floor(age/60)}小时前` : `${Math.floor(age/1440)}天前`;
-    const poolVal = s.pool_value ? '$' + (s.pool_value >= 1000 ? (s.pool_value/1000).toFixed(1)+'k' : s.pool_value.toFixed(0)) : '-';
-    const holderRate = s.holder_rate != null ? (s.holder_rate*100).toFixed(1)+'%' : '-';
+    const poolVal = s.pool_value ? (s.pool_value >= 1e6 ? '$'+(s.pool_value/1e6).toFixed(1)+'M' : s.pool_value >= 1e3 ? '$'+(s.pool_value/1e3).toFixed(1)+'K' : '$'+s.pool_value.toFixed(0)) : '-';
+    const signalInfo = s.signal_content || '-';
     html += `<tr>
       <td class="signal-time">${ageStr}</td>
       <td><b>${s.token_symbol || '?'}</b></td>
       <td><a class="contract-link" href="https://dexscreener.com/solana/${s.contract_address}" target="_blank">${s.contract_address.slice(0,6)}...${s.contract_address.slice(-4)}</a></td>
       <td>${poolVal}</td>
-      <td>${holderRate}</td>
-      <td class="signal-content" title="${(s.signal_content || '').replace(/"/g,'&quot;')}">${s.signal_content || '-'}</td>
+      <td class="signal-content" title="${(signalInfo || '').replace(/"/g,'&quot;')}">${signalInfo}</td>
     </tr>`;
   });
   html += '</tbody></table>';
