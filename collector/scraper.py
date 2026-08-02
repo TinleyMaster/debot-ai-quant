@@ -368,41 +368,140 @@ class DebotScraper:
             href = card.get_attribute("href") or ""
             contract = self._extract_contract_from_url(href)
             signal["contract_address"] = contract
-            # 只取第一行作为代币符号（避免多行内容混入）
             raw_text = card.inner_text().strip()
-            signal["token_symbol"] = raw_text.split("\n")[0].strip()[:128]
+            lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
+            signal["token_symbol"] = lines[0][:128] if lines else ""
             signal["source_url"] = href if href.startswith("http") else f"{self.base_url}{href}"
 
-            # 尝试从父级/兄弟元素提取其他数据
-            parent = card.evaluate_handle("el => el.closest('[class*=\"card\"], [class*=\"row\"], [class*=\"item\"], tr, [class*=\"signal\"]')")
-            container = parent.as_element() if parent else card
+            # 多层父容器查找，获取卡片完整内容
+            container = card
+            for parent_sel in [
+                '[class*="MuiTableRow"]', '[class*="MuiCard"]',
+                '[class*="signal-card"]', '[class*="SignalCard"]',
+                '[class*="card"]', '[class*="row"]', '[class*="item"]', 'tr',
+                '[class*="MuiGrid"]',
+            ]:
+                try:
+                    p = card.evaluate_handle(f"el => el.closest('{parent_sel}')")
+                    if p:
+                        container = p.as_element()
+                        break
+                except Exception:
+                    continue
         else:
             container = card
-            # 合约地址
             contract = self._safe_extract_text_in_element(card, self.selectors.get("contract_address", ""))
             signal["contract_address"] = self._clean_contract_address(contract)
-            # 代币符号
             signal["token_symbol"] = self._safe_extract_text_in_element(card, self.selectors.get("token_symbol", ""))
-            # 详情链接
             signal["source_url"] = self._safe_extract_href_in_element(card, self.selectors.get("source_url", ""))
 
-        # 从容器中提取通用字段
+        # 获取容器的全部文本内容，用于兜底正则提取
+        try:
+            container_text = container.inner_text().strip()
+        except Exception:
+            container_text = ""
+
         # 信号时间
         time_text = self._safe_extract_text_in_element(container, self.selectors.get("signal_time", ""))
         signal["signal_time"] = self._parse_time(time_text)
 
-        # 流动池
+        # 流动池 — 优先用 CSS 选择器，失败则从文本正则匹配 $xxx 金额
         pool_text = self._safe_extract_text_in_element(container, self.selectors.get("pool_value", ""))
         signal["pool_value"] = self._parse_number(pool_text)
+        if signal["pool_value"] is None and container_text:
+            signal["pool_value"] = self._extract_pool_value_from_text(container_text)
 
-        # 大户持仓占比
+        # 大户持仓占比 — 优先 CSS, 失败则正则匹配 xx%
         holder_text = self._safe_extract_text_in_element(container, self.selectors.get("holder_rate", ""))
         signal["holder_rate"] = self._parse_percentage(holder_text)
+        if signal["holder_rate"] is None and container_text:
+            signal["holder_rate"] = self._extract_holder_rate_from_text(container_text)
 
         # 信号文案
         signal["signal_content"] = self._safe_extract_text_in_element(container, self.selectors.get("signal_content", ""))
+        if not signal["signal_content"] and container_text:
+            signal["signal_content"] = self._extract_signal_content_from_text(container_text, signal.get("token_symbol", ""))
 
         return signal
+
+    # ================================================================
+    # 文本正则兜底提取 (选择器失败时的后备方案)
+    # ================================================================
+
+    @staticmethod
+    def _extract_pool_value_from_text(text: str) -> Optional[float]:
+        """从文本中提取流动池价值，如 '$24.5K'、'$1.2M'、'$500'"""
+        import re
+        # 匹配 $数字+单位 模式: $24.5K, $1.2M, $500, $45,123
+        patterns = [
+            (r'\$(\d+[\d,]*\.?\d*)\s*([Kk])', 1e3),     # $24.5K
+            (r'\$(\d+[\d,]*\.?\d*)\s*([Mm])', 1e6),     # $1.2M
+            (r'\$(\d+[\d,]*\.?\d*)\s*([Bb])', 1e9),     # $1B
+            (r'\$(\d+[\d,]*\.?\d*)', 1),                  # $500
+            (r'(\d+[\d,]*\.?\d*)\s*([Kk])\s*(?:pool|liquidity|liq)', 1e3),  # 24K pool
+            (r'(\d+[\d,]*\.?\d*)\s*([Mm])\s*(?:pool|liquidity|liq)', 1e6),  # 2M pool
+        ]
+        for pattern, multiplier in patterns:
+            match = re.search(pattern, text)
+            if match:
+                try:
+                    num = float(match.group(1).replace(",", ""))
+                    return num * multiplier
+                except (ValueError, IndexError):
+                    continue
+        return None
+
+    @staticmethod
+    def _extract_holder_rate_from_text(text: str) -> Optional[float]:
+        """从文本中提取持有人比例，如 '22.5%'、'Top10 45%'"""
+        import re
+        # 匹配百分比模式
+        patterns = [
+            r'(?:top\s*10|holder|holders?|持有)\s*[:：]?\s*(\d+\.?\d*)\s*%',  # "Top10: 22.5%"
+            r'(\d+\.?\d*)\s*%\s*(?:holder|holders?|top\s*10|持有)',  # "22.5% holders"
+            r'(\d+\.?\d*)\s*%',  # 任意百分比
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                try:
+                    val = float(match.group(1))
+                    return val / 100 if val > 1 else val
+                except ValueError:
+                    continue
+        return None
+
+    @staticmethod
+    def _extract_signal_content_from_text(text: str, token_symbol: str = "") -> str:
+        """从文本中提取 AI 信号文案（如倍数、评分等）"""
+        import re
+        # 优先匹配已知信号格式
+        patterns = [
+            r'(x\d+\.?\d*\s*(?:multiplier|signal|倍|信号))',  # x2.5 multiplier
+            r'(\d+\.?\d*x\s*(?:multiplier|signal)?)',          # 2.5x signal
+            r'(AI\s*(?:score|评分|signal)[:：]?\s*\d+\.?\d*)', # AI score: 8.5
+            r'(score\s*[:：]?\s*\d+\.?\d*)',                   # score: 8.5
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+
+        # 兜底：取代币名之后的文本行（通常是描述文案），但排除明显的数据行
+        lines = text.split("\n")
+        symbol_idx = -1
+        for i, line in enumerate(lines):
+            if token_symbol and token_symbol.lower() in line.lower():
+                symbol_idx = i
+                break
+        # 取代币名后 1-2 行作为信号内容
+        content_lines = []
+        for i in range(symbol_idx + 1, min(len(lines), symbol_idx + 3)):
+            line = lines[i].strip()
+            # 排除明显的数字/百分比/金额行
+            if line and not re.match(r'^[\$\d,.%xXkKmMbB\s]+$', line):
+                content_lines.append(line)
+        return " ".join(content_lines[:2]) if content_lines else ""
 
     def _extract_contract_from_url(self, url: str) -> str:
         """从 Debot URL 中提取合约地址，去除前缀 ID
