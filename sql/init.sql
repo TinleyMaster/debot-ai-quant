@@ -17,12 +17,54 @@ CREATE TABLE IF NOT EXISTS debot_signal (
     holder_rate     NUMERIC(6, 4),
     signal_content  TEXT,
     source_url      TEXT,
+    -- 回测用字段 (来自 Debot 详情卡片)
+    market_cap      NUMERIC(24, 6),
+    market_cap_prev NUMERIC(24, 6),
+    holders_count   INT,
+    price_usd       NUMERIC(24, 12),
+    price_usd_prev  NUMERIC(24, 12),
+    token_age       VARCHAR(32),
+    smart_wallets   INT,
+    avg_buy_amount  NUMERIC(24, 6),
+    multiplier      VARCHAR(16),
     create_time     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     is_processed    BOOLEAN NOT NULL DEFAULT FALSE,
 
     -- 联合唯一约束：同一合约+同一信号时间视为重复
     CONSTRAINT uq_signal UNIQUE (contract_address, signal_time)
 );
+
+-- 已有数据库的增量迁移：添加回测字段列 (IF NOT EXISTS 模式)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='market_cap') THEN
+        ALTER TABLE debot_signal ADD COLUMN market_cap NUMERIC(24, 6);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='market_cap_prev') THEN
+        ALTER TABLE debot_signal ADD COLUMN market_cap_prev NUMERIC(24, 6);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='holders_count') THEN
+        ALTER TABLE debot_signal ADD COLUMN holders_count INT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='price_usd') THEN
+        ALTER TABLE debot_signal ADD COLUMN price_usd NUMERIC(24, 12);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='price_usd_prev') THEN
+        ALTER TABLE debot_signal ADD COLUMN price_usd_prev NUMERIC(24, 12);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='token_age') THEN
+        ALTER TABLE debot_signal ADD COLUMN token_age VARCHAR(32);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='smart_wallets') THEN
+        ALTER TABLE debot_signal ADD COLUMN smart_wallets INT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='avg_buy_amount') THEN
+        ALTER TABLE debot_signal ADD COLUMN avg_buy_amount NUMERIC(24, 6);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='multiplier') THEN
+        ALTER TABLE debot_signal ADD COLUMN multiplier VARCHAR(16);
+    END IF;
+END $$;
 
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_signal_time ON debot_signal(signal_time DESC);

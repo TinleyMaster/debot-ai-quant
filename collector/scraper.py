@@ -498,6 +498,15 @@ class DebotScraper:
         signal["holder_rate"] = None
         signal["signal_content"] = ""
         signal["signal_time"] = None
+        signal["market_cap"] = None
+        signal["market_cap_prev"] = None
+        signal["holders_count"] = None
+        signal["price_usd"] = None
+        signal["price_usd_prev"] = None
+        signal["token_age"] = None
+        signal["smart_wallets"] = None
+        signal["avg_buy_amount"] = None
+        signal["multiplier"] = None
 
         if is_detail:
             self._parse_detail_card(lines, signal)
@@ -530,7 +539,9 @@ class DebotScraper:
 
             # 市值标签 + 下一行是值
             if upper in ("MC", "MARKET CAP", "MKT CAP", "LIQ", "LIQUIDITY") and i + 1 < len(lines):
-                signal["pool_value"] = self._parse_number(lines[i + 1])
+                val = self._parse_number(lines[i + 1])
+                signal["pool_value"] = val
+                signal["market_cap"] = val
                 i += 2
                 continue
 
@@ -539,14 +550,18 @@ class DebotScraper:
                 content_parts.append(f"24h: {line}")
                 # 下一行如果是 $ 开头且没有 MC 标签，就是市值
                 if i + 1 < len(lines) and lines[i + 1].startswith("$"):
-                    if signal["pool_value"] is None:
-                        signal["pool_value"] = self._parse_number(lines[i + 1])
+                    if signal.get("pool_value") is None:
+                        val = self._parse_number(lines[i + 1])
+                        signal["pool_value"] = val
+                        signal["market_cap"] = val
                 i += 1
                 continue
 
             # 直接的 $ 值（市值无标签情况，兜底）
-            if line.startswith("$") and signal["pool_value"] is None:
-                signal["pool_value"] = self._parse_number(line)
+            if line.startswith("$") and signal.get("pool_value") is None:
+                val = self._parse_number(line)
+                signal["pool_value"] = val
+                signal["market_cap"] = val
                 i += 1
                 continue
 
@@ -570,10 +585,12 @@ class DebotScraper:
         signal["signal_content"] = " · ".join(content_parts) if content_parts else ""
 
         # 兜底: 如果在 lines 后面还有 $ 值没被 MC 标签覆盖，作为 pool_value
-        if signal["pool_value"] is None:
+        if signal.get("pool_value") is None:
             for line in lines:
                 if line.startswith("$"):
-                    signal["pool_value"] = self._parse_number(line)
+                    val = self._parse_number(line)
+                    signal["pool_value"] = val
+                    signal["market_cap"] = val
                     break
 
     def _parse_detail_card(self, lines: list, signal: dict):
@@ -598,8 +615,12 @@ class DebotScraper:
             if re.match(r'^\d{1,2}:\d{2}:\d{2}$', ls):
                 signal["signal_time"] = self._parse_time(ls)
 
+            # 代币年龄 (如 "31d", "2h", "5m")
+            if re.match(r'^\d+[dhms]$', ls) and signal.get("token_age") is None:
+                signal["token_age"] = ls
+
             # 代币名: 下一个非数字行，在 Top10 和时间之后
-            if (signal["token_symbol"] == "" and ls
+            if (signal.get("token_symbol", "") == "" and ls
                     and ls not in ("ATH", "Top10", "AI报告", "报告", "同时买入", "平均买入金额",
                                    "市值", "持有人", "价格", "流动池", "弃权", "黑名单")
                     and not re.match(r'^[\d.,]+$', ls)
@@ -612,28 +633,60 @@ class DebotScraper:
                     and len(ls) > 1):
                 signal["token_symbol"] = ls[:128]
 
-            # pool_value: 市值行后的第一个 $ 值
+            # 市值: 当前值 + 前值
             if ls == "市值" and i + 1 < n:
-                signal["pool_value"] = self._parse_number(lines[i + 1])
+                signal["market_cap"] = self._parse_number(lines[i + 1])
+                if i + 2 < n:
+                    signal["market_cap_prev"] = self._parse_number(lines[i + 2])
+                # pool_value 用市值作为流动池的近似
+                if signal.get("pool_value") is None:
+                    signal["pool_value"] = signal["market_cap"]
 
-            # 构建 signal_content (汇总关键信息)
+            # 持有人数量
+            if ls == "持有人" and i + 1 < n:
+                count_str = lines[i + 1]
+                try:
+                    signal["holders_count"] = int(count_str.replace(",", ""))
+                except (ValueError, TypeError):
+                    pass
+
+            # 价格: 当前值 + 前值
+            if ls == "价格" and i + 1 < n:
+                signal["price_usd"] = self._parse_number(lines[i + 1])
+                if i + 2 < n:
+                    signal["price_usd_prev"] = self._parse_number(lines[i + 2])
+
+            # 流动池 (兜底 pool_value)
+            if ls == "流动池" and i + 1 < n:
+                pool_val = self._parse_number(lines[i + 1])
+                if pool_val is not None and signal.get("pool_value") is None:
+                    signal["pool_value"] = pool_val
+
+            # 倍数如 4x, 12x, <1x
             if re.match(r'^<?\d+\.?\d*x$', ls) or (ls.startswith("<") and ls.endswith("x")):
-                # 倍数如 4x, 12x, <1x
+                if signal.get("multiplier") is None:
+                    signal["multiplier"] = ls
                 if signal["signal_content"]:
                     signal["signal_content"] += "; "
                 signal["signal_content"] += f"倍数: {ls}"
+
+            # 聪明钱包数量
             elif "聪明钱包" in ls or "聪明钱" in ls:
                 if signal["signal_content"]:
                     signal["signal_content"] += "; "
                 signal["signal_content"] += ls
+                # 提取数字
+                m = re.search(r'(\d+)', ls)
+                if m and signal.get("smart_wallets") is None:
+                    signal["smart_wallets"] = int(m.group(1))
+
+            # 平均买入金额
             elif ls == "平均买入金额" and i + 1 < n:
                 if signal["signal_content"]:
                     signal["signal_content"] += "; "
                 signal["signal_content"] += f"均买: {lines[i+1]}"
-
-            # holder_rate 兜底: 百分比行在 Top10 之后
-            if ls == "Top10" and i + 1 < n and signal["holder_rate"] is None:
-                signal["holder_rate"] = self._parse_percentage(lines[i + 1])
+                if signal.get("avg_buy_amount") is None:
+                    signal["avg_buy_amount"] = self._parse_number(lines[i + 1])
 
     # ================================================================
     # 文本正则兜底提取 (选择器失败时的后备方案)

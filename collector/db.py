@@ -41,6 +41,9 @@ def init_db_pool():
             cur.execute("SELECT 1")
     logger.info("数据库连接验证通过")
 
+    # 执行增量迁移
+    run_migrations()
+
 
 def close_db_pool():
     """关闭数据库连接池"""
@@ -64,6 +67,39 @@ def get_conn():
 
 
 # ============================================================
+# 数据库迁移
+# ============================================================
+
+def run_migrations():
+    """执行增量数据库迁移 (幂等，已有列则跳过)"""
+    migrations = [
+        ("market_cap", "NUMERIC(24, 6)"),
+        ("market_cap_prev", "NUMERIC(24, 6)"),
+        ("holders_count", "INT"),
+        ("price_usd", "NUMERIC(24, 12)"),
+        ("price_usd_prev", "NUMERIC(24, 12)"),
+        ("token_age", "VARCHAR(32)"),
+        ("smart_wallets", "INT"),
+        ("avg_buy_amount", "NUMERIC(24, 6)"),
+        ("multiplier", "VARCHAR(16)"),
+    ]
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                for col_name, col_type in migrations:
+                    cur.execute("""
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='debot_signal' AND column_name=%s
+                    """, (col_name,))
+                    if not cur.fetchone():
+                        cur.execute(f"ALTER TABLE debot_signal ADD COLUMN {col_name} {col_type}")
+                        conn.commit()
+                        logger.info(f"数据库迁移: 添加列 debot_signal.{col_name}")
+    except Exception as e:
+        logger.warning(f"数据库迁移异常 (可能表尚未创建): {e}")
+
+
+# ============================================================
 # 信号数据操作
 # ============================================================
 
@@ -75,9 +111,15 @@ def insert_signal(conn, signal_data: dict) -> Optional[int]:
     sql = """
         INSERT INTO debot_signal
             (signal_time, contract_address, token_symbol, pool_value,
-             holder_rate, signal_content, source_url)
+             holder_rate, signal_content, source_url,
+             market_cap, market_cap_prev, holders_count,
+             price_usd, price_usd_prev, token_age,
+             smart_wallets, avg_buy_amount, multiplier)
         VALUES (%(signal_time)s, %(contract_address)s, %(token_symbol)s,
-                %(pool_value)s, %(holder_rate)s, %(signal_content)s, %(source_url)s)
+                %(pool_value)s, %(holder_rate)s, %(signal_content)s, %(source_url)s,
+                %(market_cap)s, %(market_cap_prev)s, %(holders_count)s,
+                %(price_usd)s, %(price_usd_prev)s, %(token_age)s,
+                %(smart_wallets)s, %(avg_buy_amount)s, %(multiplier)s)
         ON CONFLICT (contract_address, signal_time) DO NOTHING
         RETURNING id
     """
@@ -303,7 +345,9 @@ def get_backtest_data(conn) -> dict:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT id, signal_time, contract_address, token_symbol,
-                       pool_value, holder_rate, signal_content
+                       pool_value, holder_rate, signal_content,
+                       market_cap, holders_count, price_usd,
+                       token_age, smart_wallets, avg_buy_amount, multiplier
                 FROM debot_signal
                 WHERE contract_address != ''
                 ORDER BY signal_time DESC
@@ -313,7 +357,8 @@ def get_backtest_data(conn) -> dict:
             for row in cur.fetchall():
                 signal = dict(zip(columns, row))
                 # Decimal -> float 转换
-                for key in ("pool_value", "holder_rate"):
+                for key in ("pool_value", "holder_rate", "market_cap",
+                           "price_usd", "avg_buy_amount"):
                     if signal.get(key) is not None:
                         signal[key] = float(signal[key])
                 result["signals"].append(signal)
@@ -419,7 +464,10 @@ def get_latest_signals(conn, limit: int = 50) -> list:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT signal_time, contract_address, token_symbol,
-                       pool_value, holder_rate, signal_content
+                       pool_value, holder_rate, signal_content,
+                       market_cap, market_cap_prev, holders_count,
+                       price_usd, price_usd_prev, token_age,
+                       smart_wallets, avg_buy_amount, multiplier
                 FROM debot_signal
                 WHERE contract_address != ''
                 ORDER BY signal_time DESC
@@ -429,7 +477,8 @@ def get_latest_signals(conn, limit: int = 50) -> list:
             results = []
             for row in cur.fetchall():
                 item = dict(zip(columns, row))
-                for key in ("pool_value", "holder_rate"):
+                for key in ("pool_value", "holder_rate", "market_cap", "market_cap_prev",
+                           "price_usd", "price_usd_prev", "avg_buy_amount"):
                     if item.get(key) is not None:
                         item[key] = float(item[key])
                 if item.get("signal_time"):
