@@ -27,7 +27,7 @@ class DebotScraper:
     def __init__(self, config: dict):
         self.base_url = os.environ.get("DEBOT_BASE_URL", "https://debot.ai")
         self.login_url = os.environ.get("DEBOT_LOGIN_URL", f"{self.base_url}/login")
-        self.signal_url = os.environ.get("DEBOT_SIGNAL_URL", f"{self.base_url}/signals")
+        self.signal_url = os.environ.get("DEBOT_SIGNAL_URL", f"{self.base_url}/?chain=solana")
         self.cookie_file = os.environ.get("COOKIE_FILE", "/app/data/cookies.json")
         self.timeout = int(os.environ.get("PAGE_TIMEOUT_SECONDS", "30")) * 1000
         self.max_retries = int(os.environ.get("MAX_RETRIES", "3"))
@@ -535,6 +535,7 @@ class DebotScraper:
                     and not ls.startswith("$")
                     and not ls.startswith("<")
                     and not ls.endswith("x")
+                    and not ls.endswith("%")
                     and not "pump" in ls.lower()
                     and len(ls) > 1):
                 signal["token_symbol"] = ls[:128]
