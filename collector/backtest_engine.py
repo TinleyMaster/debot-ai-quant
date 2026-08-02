@@ -18,10 +18,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from db import (
-    init_db_pool, close_db_pool, get_conn,
-    get_backtest_data, save_best_strategy,
-)
+from db import get_conn, get_backtest_data, save_best_strategy
 
 logger = logging.getLogger("backtest")
 
@@ -550,12 +547,6 @@ def run_backtest() -> dict:
     logger.info(f"参数网格: {len(list(product(*PARAM_GRID.values())))} 组")
     logger.info("=" * 50)
 
-    try:
-        init_db_pool()
-    except Exception as e:
-        logger.error(f"数据库连接失败: {e}")
-        return {"success": False, "error": str(e)}
-
     start_time = time.time()
 
     try:
@@ -564,7 +555,6 @@ def run_backtest() -> dict:
 
         if not results:
             logger.warning("回测完成，但没有有效结果")
-            close_db_pool()
             return {"success": True, "combinations": 0, "top_strategies": [], "saved": 0, "duration_s": 0}
 
         # 输出 top 5
@@ -578,8 +568,6 @@ def run_backtest() -> dict:
         elapsed = round(time.time() - start_time, 1)
         logger.info(f"回测完成, 耗时 {elapsed}s")
 
-        close_db_pool()
-
         return {
             "success": True,
             "combinations": len(results),
@@ -591,7 +579,6 @@ def run_backtest() -> dict:
 
     except Exception as e:
         logger.error(f"回测异常: {e}", exc_info=True)
-        close_db_pool()
         return {"success": False, "error": str(e)}
 
 
@@ -614,10 +601,6 @@ def run_custom_backtest(params_dict: dict) -> dict:
     params_dict: 可选键名对应 BacktestParams 字段，缺省使用默认值。
     """
     logger.info("自定义参数回测启动")
-    try:
-        init_db_pool()
-    except Exception as e:
-        return {"success": False, "error": str(e)}
 
     start_time = time.time()
 
@@ -631,7 +614,6 @@ def run_custom_backtest(params_dict: dict) -> dict:
         engine.load_data()
 
         if not engine.signals:
-            close_db_pool()
             return {"success": True, "params": params.to_dict(), "trades": [], "summary": None}
 
         result = engine.run_single(params)
@@ -654,7 +636,6 @@ def run_custom_backtest(params_dict: dict) -> dict:
             })
 
         elapsed = round(time.time() - start_time, 1)
-        close_db_pool()
 
         return {
             "success": True,
@@ -667,7 +648,6 @@ def run_custom_backtest(params_dict: dict) -> dict:
 
     except Exception as e:
         logger.error(f"自定义回测异常: {e}", exc_info=True)
-        close_db_pool()
         return {"success": False, "error": str(e)}
 
 
@@ -676,17 +656,12 @@ def get_latest_report() -> dict:
     读取最近一次网格回测的完整结果，包含交易明细。
     """
     logger.info("读取最新回测报告")
-    try:
-        init_db_pool()
-    except Exception as e:
-        return {"success": False, "error": str(e)}
 
     try:
         with get_conn() as conn:
             active = get_active_strategy(conn)
 
         if not active:
-            close_db_pool()
             return {"success": True, "has_report": False, "message": "暂无回测报告"}
 
         # 用活跃策略参数重新跑一次获取交易明细
@@ -717,8 +692,6 @@ def get_latest_report() -> dict:
                 "entry_time": t.entry_time,
             })
 
-        close_db_pool()
-
         return {
             "success": True,
             "has_report": True,
@@ -731,5 +704,4 @@ def get_latest_report() -> dict:
 
     except Exception as e:
         logger.error(f"读取报告异常: {e}", exc_info=True)
-        close_db_pool()
         return {"success": False, "error": str(e)}

@@ -7,7 +7,7 @@
 import json
 import logging
 
-from db import init_db_pool, close_db_pool, get_conn, get_active_strategy
+from db import get_conn, get_active_strategy
 from backtest_engine import BUY_AMOUNT_SOL, BUY_AMOUNT_USD
 
 logger = logging.getLogger("strategy_report")
@@ -76,18 +76,11 @@ def run_sync() -> dict:
     logger.info("=" * 50)
 
     try:
-        init_db_pool()
-    except Exception as e:
-        logger.error(f"数据库连接失败: {e}")
-        return {"success": False, "error": str(e)}
-
-    try:
         with get_conn() as conn:
             active = get_active_strategy(conn)
 
         if not active:
             logger.warning("无启用的策略")
-            close_db_pool()
             return {"success": True, "has_strategy": False, "message": "当前无启用的最优策略"}
 
         report = format_report(active)
@@ -102,8 +95,6 @@ def run_sync() -> dict:
             logger.info(f"  {key}: {val}")
         logger.info("=" * 40)
 
-        close_db_pool()
-
         return {
             "success": True,
             "has_strategy": True,
@@ -113,7 +104,6 @@ def run_sync() -> dict:
 
     except Exception as e:
         logger.error(f"策略报告异常: {e}", exc_info=True)
-        close_db_pool()
         return {"success": False, "error": str(e)}
 
 

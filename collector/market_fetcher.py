@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from db import (
-    init_db_pool, close_db_pool, get_conn,
+    get_conn,
     get_contracts_without_snapshot, insert_market_snapshot,
     get_market_snapshot_count,
 )
@@ -126,21 +126,13 @@ def run_fetch():
     logger.info("行情数据拉取任务启动")
     logger.info("=" * 50)
 
-    # 1. 初始化数据库
-    try:
-        init_db_pool()
-    except Exception as e:
-        logger.error(f"数据库连接失败: {e}")
-        return {"success": False, "error": str(e), "fetched": 0, "stored": 0}
-
-    # 2. 获取待补全的合约地址列表
+    # 获取待补全的合约地址列表
     with get_conn() as conn:
         addresses = get_contracts_without_snapshot(conn, since_hours=0.25)
         total_before = get_market_snapshot_count(conn)
 
     if not addresses:
         logger.info("所有代币行情已是最新，无需拉取")
-        close_db_pool()
         return {"success": True, "fetched": 0, "stored": 0, "total": total_before}
 
     logger.info(f"待拉取行情: {len(addresses)} 个代币 (已有 {total_before} 条快照)")
@@ -192,7 +184,6 @@ def run_fetch():
 
     logger.info(f"行情拉取完成: 拉取 {total_fetched} 条, 入库 {total_stored} 条, 累计 {total_after} 条快照")
 
-    close_db_pool()
     return {
         "success": True,
         "fetched": total_fetched,
