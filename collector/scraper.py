@@ -391,14 +391,15 @@ class DebotScraper:
         if not getattr(self, '_debug_card_logged', False):
             self._debug_card_logged = True
             try:
-                outer = container.evaluate("el => el.outerHTML.substring(0,3000)")
-                logger.info(f"[DEBUG] 首个信号卡片容器文本: {container_text[:500]}")
-                logger.info(f"[DEBUG] 首个信号卡片容器标签: {container.evaluate('el => el.tagName')}")
-                # 保存完整 HTML 片段
+                outer = container.evaluate("el => el.outerHTML.substring(0,8000)")
+                logger.info(f"[DEBUG] 容器标签: {container.evaluate('el => el.tagName')}")
+                logger.info(f"[DEBUG] 容器 class: {container.evaluate('el => el.className')}")
+                logger.info(f"[DEBUG] 容器子元素数: {container.evaluate('el => el.children.length')}")
+                logger.info(f"[DEBUG] 容器全文 (1000字符): {container_text[:1000]}")
                 debug_path = "/app/data/card_debug.html"
                 with open(debug_path, "w", encoding="utf-8") as f:
                     f.write(outer)
-                logger.info(f"[DEBUG] 卡片 HTML 已保存到: {debug_path}")
+                logger.info(f"[DEBUG] 卡片 HTML (8000字符) 已保存到: {debug_path}")
             except Exception as e:
                 logger.warning(f"[DEBUG] 保存卡片调试信息失败: {e}")
 
@@ -426,14 +427,18 @@ class DebotScraper:
         return signal
 
     def _find_signal_container(self, card):
-        """从 <a> 链接向上查找完整的表格行/卡片容器
+        """从 <a> 链接向上查找完整的卡片容器
         
-        Debot 页面使用 MUI 表格布局，合约链接在一个 <td> 中，
-        pool_value/holder_rate 等在其他 <td> 中。
-        需要拿到整行 <tr> 才能获取全部文本。
+        Debot 页面使用 MUI Stack 布局，合约链接 (<a>) 只含 logo，
+        pool_value/holder_rate/signal_content 在兄弟 div 中。
+        需要拿到父级 MuiStack-root 才能获取全部文本。
         """
-        # 第一优先：找最近的 <tr> 或 table row 类
-        for sel in ['tr', '[class*="MuiTableRow"]', '[role="row"]']:
+        # 第一优先：找 MUI Stack 容器（Debot 实际使用的布局）
+        for sel in [
+            '[class*="MuiStack-root"]',        # Debot 信号卡片行
+            'tr', '[class*="MuiTableRow"]',    # 备用：表格布局
+            '[class*="MuiGrid"]',              # Grid 布局
+        ]:
             try:
                 el = card.evaluate_handle(f"el => el.closest('{sel}')")
                 if el:
@@ -443,7 +448,7 @@ class DebotScraper:
             except Exception:
                 continue
 
-        # 第二优先：向上遍历最多 3 层父元素
+        # 兜底：向上遍历最多 3 层找多子元素父节点
         try:
             parent = card.evaluate_handle("el => { let p = el.parentElement; for(let i=0; i<3 && p; i++) { if(p.children.length >= 3) return p; p = p.parentElement; } return el.parentElement; }")
             if parent:
