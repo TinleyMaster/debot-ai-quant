@@ -242,7 +242,7 @@ async function runSingle() {
   document.getElementById('btn-grid').disabled = true;
   const start = Date.now();
   try {
-    const resp = await fetch('/backtest-custom', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(getParams()) });
+    const resp = await fetch('/backtest-custom', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(getParams()), signal: AbortSignal.timeout(120000) });
     const data = await resp.json();
     lastResult = data;
     showSingleResult(data, (Date.now()-start)/1000);
@@ -259,7 +259,7 @@ async function runGrid() {
   document.getElementById('btn-grid').disabled = true;
   const start = Date.now();
   try {
-    const resp = await fetch('/run-backtest');
+    const resp = await fetch('/run-backtest', { signal: AbortSignal.timeout(600000) });
     const data = await resp.json();
     lastResult = data;
     showGridResult(data, (Date.now()-start)/1000);
@@ -291,7 +291,7 @@ async function loadLatest() {
   document.getElementById('btn-single').disabled = true;
   document.getElementById('btn-grid').disabled = true;
   try {
-    const resp = await fetch('/run-backtest');
+    const resp = await fetch('/run-backtest', { signal: AbortSignal.timeout(600000) });
     const data = await resp.json();
     lastResult = data;
     showGridResult(data, 0);
