@@ -58,6 +58,8 @@ _scraper = None
 # 连续空跑轮次计数（用于触发浏览器重启）
 _consecutive_empty_rounds = 0
 _last_signal_time = ""  # 最近一次成功入库的信号时间
+_last_scrape_round = ""  # 最近一轮采集完成时间（心跳检测）
+_scraper_round_count = 0  # 累计采集轮次
 
 
 def handle_shutdown(signum, frame):
@@ -197,6 +199,8 @@ class HealthHandler(BaseHTTPRequestHandler):
                     "last_block_time": _last_block_time,
                     "consecutive_empty_rounds": _consecutive_empty_rounds,
                     "last_signal_time": _last_signal_time,
+                    "last_scrape_round": _last_scrape_round,
+                    "scraper_round_count": _scraper_round_count,
                     "version": os.environ.get("GIT_COMMIT", "unknown"),
                 })
                 self.wfile.write(resp.encode())
@@ -552,6 +556,11 @@ def main():
             logger.info(f"--- 第 {round_count} 轮采集开始 ---")
 
             run_once(scraper)
+
+            # 心跳时间戳
+            global _last_scrape_round, _scraper_round_count
+            _last_scrape_round = datetime.now(timezone.utc).isoformat()
+            _scraper_round_count = round_count
 
             # 关闭页面释放 CPU（避免 Debot SPA WebSocket 持续渲染）
             scraper.close_page()
