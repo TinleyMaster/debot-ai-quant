@@ -625,8 +625,10 @@ class DebotScraper:
                                    "市值", "持有人", "价格", "流动池", "弃权", "黑名单")
                     and not re.match(r'^[\d.,]+$', ls)
                     and not re.match(r'^\d+[dhms]$', ls)  # age like "31d"
+                    and not re.match(r'^\d{1,2}:\d{2}:\d{2}$', ls)  # time like 14:23:45
                     and not ls.startswith("$")
                     and not ls.startswith("<")
+                    and not ls.startswith("#")
                     and not ls.endswith("x")
                     and not ls.endswith("%")
                     and not "pump" in ls.lower()
