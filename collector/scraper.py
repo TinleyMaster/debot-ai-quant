@@ -371,10 +371,7 @@ class DebotScraper:
             except Exception:
                 pass
 
-        # 滚动加载更多（如有懒加载）
-        self._scroll_to_load()
-
-        # 解析信号卡片
+        # 解析信号卡片（内部处理虚拟滚动加载）
         signals = self._parse_signal_list()
         logger.info(f"本轮抓取到 {len(signals)} 条信号")
 
@@ -396,24 +393,14 @@ class DebotScraper:
         except Exception as e:
             logger.warning(f"保存调试 HTML 失败: {e}")
 
-    def _scroll_to_load(self):
-        """滚动页面触发懒加载"""
-        for _ in range(3):
-            try:
-                self._page.evaluate("window.scrollBy(0, 800)")
-                time.sleep(0.5)
-            except Exception:
-                break
-
     def _find_detail_cards(self) -> list:
         """
-        查找页面上所有"详情卡片"（含完整 AI 信号信息的卡片）。
+        查找当前视口中所有"详情卡片"（含完整 AI 信号信息的卡片）。
         方法：用 JS 找出同时含 "Top10" + "smart wallets" + "Market Cap"
         且包含代币链接的卡片容器元素，加特殊属性标记后返回 ElementHandle 列表。
         """
         js_script = """
             () => {
-                // 收集所有含 Top10 + smart wallets + Market Cap 且长度合适、含代币链接的元素
                 const all = document.querySelectorAll('*');
                 const candidates = [];
                 for (const el of all) {
@@ -425,11 +412,9 @@ class DebotScraper:
                     if (!el.querySelector('a[href*="/token/solana/"]')) continue;
                     candidates.push(el);
                 }
-                // 只保留最内层卡片（没有其他候选是其子元素）
                 const cards = candidates.filter(c => {
                     return !candidates.some(other => other !== c && c.contains(other));
                 });
-                // 加特殊属性标记，Python 侧用选择器获取
                 cards.forEach((c, i) => c.setAttribute('data-scraper-detail', i));
                 return cards.length;
             }
@@ -442,72 +427,166 @@ class DebotScraper:
             logger.warning(f"查找详情卡片失败: {e}")
         return []
 
-    def _parse_signal_list(self) -> List[dict]:
-        """解析页面信号列表
+    def _find_scroll_container(self) -> str:
+        """
+        查找虚拟列表的滚动容器选择器。
+        详情卡片的祖先中，overflowY 为 auto 且高度远小于滚动高度的那个。
+        """
+        js_script = """
+            () => {
+                const all = document.querySelectorAll('*');
+                // 先找任意一张详情卡
+                let detailCard = null;
+                for (const el of all) {
+                    const txt = (el.innerText || '').trim();
+                    if (txt.length < 200 || txt.length > 3000) continue;
+                    if (txt.indexOf('Top10') < 0) continue;
+                    if (txt.indexOf('smart wallets') < 0) continue;
+                    if (txt.indexOf('Market Cap') < 0) continue;
+                    if (!el.querySelector('a[href*="/token/solana/"]')) continue;
+                    detailCard = el;
+                    break;
+                }
+                if (!detailCard) return null;
+                // 向上找有滚动条的祖先
+                let ancestor = detailCard.parentElement;
+                while (ancestor && ancestor !== document.body) {
+                    const style = window.getComputedStyle(ancestor);
+                    if ((style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+                        ancestor.scrollHeight > ancestor.clientHeight + 100) {
+                        // 返回一个稳定的选择器
+                        if (ancestor.className && typeof ancestor.className === 'string') {
+                            const cls = ancestor.className.split(/\\s+/).filter(c => c).slice(0, 3).join('.');
+                            if (cls) return '.' + cls;
+                        }
+                    }
+                    ancestor = ancestor.parentElement;
+                }
+                return null;
+            }
+        """
+        try:
+            sel = self._page.evaluate(js_script)
+            return sel
+        except Exception as e:
+            logger.warning(f"查找滚动容器失败: {e}")
+        return None
 
-        页面有两类卡片：
-        1) 详情信号卡片（含 AI报告/倍数/价格/持有人等完整字段）→ 优先抓取
-        2) 活跃度榜单卡片（只有 24h涨跌幅/成交量/排名）→ 补充
+    def _scroll_down(self, scroll_sel: str, ratio: float = 0.7) -> bool:
+        """
+        向下滚动虚拟列表容器一屏的 ratio 比例。
+        返回是否还有更多可滚动（未到底部）。
+        """
+        js_script = f"""
+            () => {{
+                const el = document.querySelector('{scroll_sel}');
+                if (!el) return {{ hasMore: false }};
+                const step = el.clientHeight * {ratio};
+                el.scrollTop += step;
+                const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 5;
+                return {{ hasMore: !atBottom, scrollTop: el.scrollTop, scrollHeight: el.scrollHeight }};
+            }}
+        """
+        try:
+            result = self._page.evaluate(js_script)
+            return result.get('hasMore', False)
+        except Exception as e:
+            logger.warning(f"滚动失败: {e}")
+            return False
+
+    def _parse_signal_list(self) -> List[dict]:
+        """
+        解析页面信号列表 - 虚拟滚动逐屏采集。
+
+        Debot 的 AI 信号列表是虚拟滚动列表，DOM 中只保留视口附近的卡片。
+        策略：逐屏向下滚动，每屏解析当前可见的详情卡片，去重后合并。
         """
         signals = []
         seen = set()  # 去重: contract_address + signal_time
-        max_signals = self.scrape_rules.get("max_signals_per_run", 50)
-        container_selector = self.selectors.get("signal_list", ".signal-card")
+        seen_contracts = set()  # 去重: 只看合约地址（同一代币在多个视口出现）
+        max_signals = self.scrape_rules.get("max_signals_per_run", 200)
+        max_scrolls = self.scrape_rules.get("max_scroll_per_run", 30)
 
-        # ---- 第 1 步: 优先找详情卡片（用 JS 直接定位含"报告"的卡片容器） ----
-        detail_cards_raw = self._find_detail_cards()
-        logger.info(f"直接定位到 {len(detail_cards_raw)} 张详情卡片")
-
-        # ---- 第 2 步: 找所有代币链接卡片（活跃度等）----
-        all_link_cards = []
-        try:
-            all_link_cards = self._page.query_selector_all(container_selector)
-            if not all_link_cards:
-                for alt_sel in container_selector.split(",")[1:]:
-                    all_link_cards = self._page.query_selector_all(alt_sel.strip())
-                    if all_link_cards:
-                        break
-        except Exception as e:
-            logger.error(f"查找链接卡片失败: {e}")
-
-        logger.info(f"匹配到 {len(all_link_cards)} 个代币链接元素")
-
-        # ---- 第 3 步: 分离活跃度卡片（非详情卡的链接卡片） ----
-        activity_cards_raw = []
-        for card in all_link_cards:
-            try:
-                raw = card.inner_text().strip()
-                if len(raw) < 20:
-                    continue
-                if "报告" not in raw:
-                    activity_cards_raw.append(card)
-            except Exception:
-                continue
-
-        # ---- 第 4 步: 优先解析详情卡，再用活跃度卡补充 ----
-        def _parse_and_collect(card_list, label):
-            count = 0
-            for idx, card in enumerate(card_list):
-                if len(signals) >= max_signals:
-                    break
+        # 找到滚动容器
+        scroll_sel = self._find_scroll_container()
+        if not scroll_sel:
+            logger.warning("未找到滚动容器，回退到静态采集")
+            detail_cards_raw = self._find_detail_cards()
+            for card in detail_cards_raw:
                 try:
                     signal = self._parse_single_card(card)
                     if signal and signal.get("contract_address"):
-                        key = (signal["contract_address"], signal.get("signal_time", ""))
-                        if key not in seen:
-                            seen.add(key)
+                        key = signal["contract_address"]
+                        if key not in seen_contracts:
+                            seen_contracts.add(key)
                             signals.append(signal)
-                            count += 1
-                except Exception as e:
-                    logger.warning(f"解析{label}卡片 #{idx} 失败: {e}")
+                except Exception:
                     continue
-            return count
+            return signals
 
-        detail_count = _parse_and_collect(detail_cards_raw, "详情")
-        activity_count = _parse_and_collect(activity_cards_raw, "活跃度")
+        logger.info(f"滚动容器: {scroll_sel}，开始逐屏采集（最多 {max_scrolls} 屏，上限 {max_signals} 条）")
 
-        logger.info(f"本轮解析完成: 共 {len(signals)} 条信号 "
-                    f"(详情 {detail_count} 条 / 活跃度 {activity_count} 条)")
+        # 先滚回顶部（确保从头开始）
+        try:
+            self._page.evaluate(f"""() => {{
+                const el = document.querySelector('{scroll_sel}');
+                if (el) el.scrollTop = 0;
+            }}""")
+            time.sleep(0.5)
+        except Exception:
+            pass
+
+        scroll_count = 0
+        same_count_streak = 0  # 连续几屏没有新增代币，可能到底了
+        last_count = 0
+
+        while scroll_count < max_scrolls and len(signals) < max_signals:
+            # 清除旧标记
+            try:
+                self._page.evaluate("""() => {
+                    document.querySelectorAll('[data-scraper-detail]').forEach(el => {
+                        el.removeAttribute('data-scraper-detail');
+                    });
+                }""")
+            except Exception:
+                pass
+
+            # 采集当前视口的详情卡
+            detail_cards_raw = self._find_detail_cards()
+
+            new_this_screen = 0
+            for card in detail_cards_raw:
+                try:
+                    signal = self._parse_single_card(card)
+                    if signal and signal.get("contract_address"):
+                        key = signal["contract_address"]
+                        if key not in seen_contracts:
+                            seen_contracts.add(key)
+                            signals.append(signal)
+                            new_this_screen += 1
+                except Exception:
+                    continue
+
+            if new_this_screen == 0 and len(signals) == last_count:
+                same_count_streak += 1
+                if same_count_streak >= 3:
+                    logger.info(f"连续 {same_count_streak} 屏无新增，已到底部")
+                    break
+            else:
+                same_count_streak = 0
+
+            last_count = len(signals)
+            scroll_count += 1
+
+            # 向下滚动
+            has_more = self._scroll_down(scroll_sel, 0.7)
+            time.sleep(1.0)
+
+            if not has_more and same_count_streak >= 2:
+                logger.info("已滚动到底部")
+                break
+
+        logger.info(f"本轮解析完成: 滚动 {scroll_count} 屏，共 {len(signals)} 条详情信号")
         return signals
 
     def _parse_single_card(self, card) -> Optional[dict]:

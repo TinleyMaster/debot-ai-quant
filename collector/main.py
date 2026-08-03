@@ -27,6 +27,7 @@ from db import (
     get_latest_signals, get_token_kline, get_all_tracked_tokens,
 )
 from scraper import DebotScraper
+from api_client import DebotAPIClient, create_client_from_env
 from market_fetcher import run_fetch as run_market_fetch
 from backtest_engine import run_backtest, run_custom_backtest, get_latest_report
 from strategy_sync import run_sync as run_strategy_sync
@@ -55,11 +56,14 @@ _last_block_reason = ""
 _last_block_time = ""
 # 采集器实例引用（供调试接口使用）
 _scraper = None
+_api_client = None
 # 连续空跑轮次计数（用于触发浏览器重启）
 _consecutive_empty_rounds = 0
 _last_signal_time = ""  # 最近一次成功入库的信号时间
 _last_scrape_round = ""  # 最近一轮采集完成时间（心跳检测）
 _scraper_round_count = 0  # 累计采集轮次
+_collect_method = "api"  # 当前采集方式: api / playwright
+_api_fallback_count = 0  # API 连续失败次数
 
 
 def handle_shutdown(signum, frame):
@@ -93,41 +97,91 @@ def load_config() -> dict:
 # 主循环
 # ============================================================
 
-def run_once(scraper: DebotScraper) -> dict:
+def run_once(scraper: DebotScraper = None, api_client: DebotAPIClient = None) -> dict:
     """
     执行一轮采集任务。
+    优先使用 API 客户端；API 连续失败 3 次后回退到 Playwright。
     返回统计信息。
     """
-    global _last_block_reason, _last_block_time, _consecutive_empty_rounds, _last_signal_time
+    global _last_block_reason, _last_block_time, _consecutive_empty_rounds
+    global _last_signal_time, _collect_method, _api_fallback_count
+
     start_time = time.time()
-    stats = {"scraped": 0, "new": 0, "errors": 0, "error_detail": None, "alert_type": None}
+    stats = {
+        "scraped": 0, "new": 0, "errors": 0,
+        "error_detail": None, "alert_type": None,
+        "method": _collect_method,
+    }
 
-    try:
-        # 1. 抓取信号列表
-        signals = scraper.scrape_signals()
-        stats["scraped"] = len(signals)
+    signals = []
 
-        # 检测页面阻断
-        if scraper._block_reason:
-            stats["alert_type"] = scraper._block_reason
-            _last_block_reason = scraper._block_reason
-            _last_block_time = datetime.now(timezone.utc).isoformat()
-            logger.warning(f"页面被阻断: {scraper._block_reason}")
+    # ---- 优先 API ----
+    if _collect_method == "api" and api_client:
+        try:
+            logger.info(f"[API] 开始拉取信号...")
+            signals = api_client.fetch_all_signals(max_signals=200)
+            stats["scraped"] = len(signals)
 
-        if not signals:
-            _consecutive_empty_rounds += 1
-            logger.info(f"本轮未抓取到信号 (连续 {_consecutive_empty_rounds} 轮空跑)")
-            # 连续 5 轮空跑 + 非阻断状态 → 强制重启浏览器
+            if signals:
+                _api_fallback_count = 0
+                logger.info(f"[API] 拉取成功: {len(signals)} 条信号, "
+                            f"调用 {api_client.total_api_calls} 次")
+            else:
+                _api_fallback_count += 1
+                logger.warning(f"[API] 返回空数据 (连续 {_api_fallback_count} 次)")
+                if _api_fallback_count >= 3:
+                    logger.warning("[API] 连续 3 次空数据，切换到 Playwright 模式")
+                    _collect_method = "playwright"
+
+        except Exception as e:
+            _api_fallback_count += 1
+            stats["errors"] += 1
+            stats["error_detail"] = f"API error: {str(e)[:200]}"
+            logger.error(f"[API] 拉取异常 (连续 {_api_fallback_count} 次): {e}")
+
+            if _api_fallback_count >= 3:
+                logger.warning("[API] 连续 3 次失败，切换到 Playwright 模式")
+                _collect_method = "playwright"
+
+    # ---- 回退到 Playwright ----
+    if _collect_method == "playwright" and scraper:
+        try:
+            logger.info(f"[Playwright] 开始抓取信号...")
+            signals = scraper.scrape_signals()
+            stats["scraped"] = len(signals)
+
+            # 检测页面阻断
+            if scraper._block_reason:
+                stats["alert_type"] = scraper._block_reason
+                _last_block_reason = scraper._block_reason
+                _last_block_time = datetime.now(timezone.utc).isoformat()
+                logger.warning(f"页面被阻断: {scraper._block_reason}")
+
+        except Exception as e:
+            stats["errors"] += 1
+            stats["error_detail"] = f"Playwright error: {str(e)[:200]}"
+            logger.error(f"[Playwright] 抓取异常: {e}", exc_info=True)
+
+    # ---- 写入数据库 ----
+    if not signals:
+        _consecutive_empty_rounds += 1
+        logger.info(f"本轮未抓取到信号 (连续 {_consecutive_empty_rounds} 轮空跑)")
+
+        # Playwright 模式下，连续空跑触发浏览器重启
+        if _collect_method == "playwright" and scraper:
             if _consecutive_empty_rounds >= 5 and not scraper._block_reason:
                 logger.warning(f"连续 {_consecutive_empty_rounds} 轮空跑，强制重启浏览器")
                 scraper.restart_browser()
                 _consecutive_empty_rounds = 0
-            return stats
 
-        # 重置空跑计数
-        _consecutive_empty_rounds = 0
+        stats["duration_ms"] = int((time.time() - start_time) * 1000)
+        _write_run_log(stats)
+        return stats
 
-        # 2. 写入数据库（去重）
+    # 重置空跑计数
+    _consecutive_empty_rounds = 0
+
+    try:
         with get_conn() as conn:
             for sig in signals:
                 try:
@@ -135,45 +189,47 @@ def run_once(scraper: DebotScraper) -> dict:
                     if new_id:
                         stats["new"] += 1
                         _last_signal_time = sig.get("signal_time", "")
-                        logger.info(f"新信号入库: {sig.get('token_symbol', '?')} {sig['contract_address']}")
+                        if stats["new"] <= 15:  # 只打印前 15 条，避免日志太多
+                            logger.info(f"新信号入库: {sig.get('token_symbol', '?')} {sig['contract_address']}")
                 except Exception as e:
                     stats["errors"] += 1
                     logger.error(f"信号入库失败: {e}")
-
-        logger.info(f"本轮完成: 抓取 {stats['scraped']} 条, 新增 {stats['new']} 条, 错误 {stats['errors']} 次")
-
     except Exception as e:
         stats["errors"] += 1
-        stats["error_detail"] = str(e)[:500]
-        logger.error(f"采集轮次异常: {e}", exc_info=True)
+        stats["error_detail"] = f"DB error: {str(e)[:200]}"
+        logger.error(f"写入数据库失败: {e}")
 
-    finally:
-        stats["duration_ms"] = int((time.time() - start_time) * 1000)
+    logger.info(f"本轮完成 ({stats['method']}): "
+                f"抓取 {stats['scraped']} 条, 新增 {stats['new']} 条, 错误 {stats['errors']} 次")
 
-        # 写入运行日志
-        try:
-            with get_conn() as conn:
-                insert_run_log(
-                    conn,
-                    signals_scraped=stats["scraped"],
-                    signals_new=stats["new"],
-                    errors_count=stats["errors"],
-                    error_detail=stats.get("error_detail"),
-                    alert_type=stats.get("alert_type"),
-                    duration_ms=stats.get("duration_ms"),
-                )
-                # 页面阻断时写入告警表
-                if stats.get("alert_type"):
-                    alert_msg = f"页面阻断类型: {stats['alert_type']}"
-                    if stats["alert_type"] == "login_required":
-                        alert_msg = "Cookie 已过期，需要重新导入登录凭证"
-                    elif stats["alert_type"] == "cloudflare_challenge":
-                        alert_msg = "被 Cloudflare 人机验证拦截，可能需要手动验证"
-                    insert_alert(conn, stats["alert_type"], alert_msg)
-        except Exception as e:
-            logger.error(f"写入运行日志失败: {e}")
-
+    stats["duration_ms"] = int((time.time() - start_time) * 1000)
+    _write_run_log(stats)
     return stats
+
+
+def _write_run_log(stats: dict):
+    """写入运行日志（提取自 run_once，便于复用）"""
+    try:
+        with get_conn() as conn:
+            insert_run_log(
+                conn,
+                signals_scraped=stats["scraped"],
+                signals_new=stats["new"],
+                errors_count=stats["errors"],
+                error_detail=stats.get("error_detail"),
+                alert_type=stats.get("alert_type"),
+                duration_ms=stats.get("duration_ms"),
+            )
+            # 页面阻断时写入告警表
+            if stats.get("alert_type"):
+                alert_msg = f"页面阻断类型: {stats['alert_type']}"
+                if stats["alert_type"] == "login_required":
+                    alert_msg = "Cookie 已过期，需要重新导入登录凭证"
+                elif stats["alert_type"] == "cloudflare_challenge":
+                    alert_msg = "被 Cloudflare 人机验证拦截，可能需要手动验证"
+                insert_alert(conn, stats["alert_type"], alert_msg)
+    except Exception as e:
+        logger.error(f"写入运行日志失败: {e}")
 
 
 # ============================================================
@@ -201,6 +257,8 @@ class HealthHandler(BaseHTTPRequestHandler):
                     "last_signal_time": _last_signal_time,
                     "last_scrape_round": _last_scrape_round,
                     "scraper_round_count": _scraper_round_count,
+                    "collect_method": _collect_method,
+                    "api_fallback_count": _api_fallback_count,
                     "version": os.environ.get("GIT_COMMIT", "unknown"),
                 })
                 self.wfile.write(resp.encode())
@@ -535,38 +593,58 @@ def main():
     # 加载配置
     config = load_config()
 
-    # 启动采集器
-    scraper = DebotScraper(config)
-    scraper.start()
+    # 初始化 API 客户端（首选采集方式）
+    api_client = create_client_from_env()
+    global _api_client
+    _api_client = api_client
 
-    global _scraper
-    _scraper = scraper
+    # 测试 API 可用性
+    api_ok = api_client.test_connection()
+    if api_ok:
+        logger.info(f"[API] 连接正常，采用 API 模式采集")
+        _collect_method = "api"
+    else:
+        logger.warning(f"[API] 连接失败，回退到 Playwright 模式")
+        _collect_method = "playwright"
+
+    # 启动 Playwright 采集器（备用）
+    scraper = None
+    if os.environ.get("ENABLE_PLAYWRIGHT", "1") == "1":
+        scraper = DebotScraper(config)
+        scraper.start()
+        global _scraper
+        _scraper = scraper
 
     poll_interval = int(os.environ.get("POLL_INTERVAL_SECONDS", "90"))
-    # 安全限制：最低 60 秒（降低 Cloudflare bot score 风险）
-    if poll_interval < 60:
-        logger.warning(f"采集间隔 {poll_interval}s 低于安全限制，已调整为 60s")
-        poll_interval = 60
+    # 安全限制：API 模式最低 30 秒，Playwright 模式最低 60 秒
+    min_interval = 30 if _collect_method == "api" else 60
+    if poll_interval < min_interval:
+        logger.warning(f"采集间隔 {poll_interval}s 低于安全限制，已调整为 {min_interval}s")
+        poll_interval = min_interval
 
     round_count = 0
 
     try:
         while not _shutdown_flag:
             round_count += 1
-            logger.info(f"--- 第 {round_count} 轮采集开始 ---")
+            logger.info(f"--- 第 {round_count} 轮采集开始 ({_collect_method}) ---")
 
-            run_once(scraper)
+            run_once(scraper=scraper, api_client=api_client)
 
             # 心跳时间戳
             global _last_scrape_round, _scraper_round_count
             _last_scrape_round = datetime.now(timezone.utc).isoformat()
             _scraper_round_count = round_count
 
-            # 关闭页面释放 CPU（避免 Debot SPA WebSocket 持续渲染）
-            scraper.close_page()
+            # Playwright 模式下关闭页面释放 CPU
+            if _collect_method == "playwright" and scraper:
+                scraper.close_page()
 
-            # 随机间隔 60~180s，模拟真人刷新节奏，规避 Cloudflare 时序指纹
-            actual_interval = random.randint(60, 180)
+            # API 模式间隔 30~60s，Playwright 模式 60~180s
+            if _collect_method == "api":
+                actual_interval = random.randint(30, 60)
+            else:
+                actual_interval = random.randint(60, 180)
             logger.info(f"等待 {actual_interval}s 后下一轮...\n")
 
             # 分段 sleep，支持优雅退出
@@ -580,7 +658,8 @@ def main():
     finally:
         logger.info("正在关闭服务...")
         health_server.shutdown()
-        scraper.stop()
+        if scraper:
+            scraper.stop()
         close_db_pool()
         logger.info("服务已安全退出")
 
