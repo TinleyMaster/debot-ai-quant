@@ -279,7 +279,8 @@ class DebotAPIClient:
                 "multiplier": multiplier,
             }
         except Exception as e:
-            logger.error(f"标准化信号失败: {e}, token={result.get('token')}")
+            token_addr = result.get('token') if result else 'unknown'
+            logger.error(f"标准化信号失败: {e}, token={token_addr}")
             return None
 
     @staticmethod

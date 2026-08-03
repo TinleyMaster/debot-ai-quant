@@ -1271,7 +1271,7 @@ class DebotScraper:
         text = text.replace("%", "").strip()
         try:
             val = float(text)
-            # 如果值 > 1，假设直接是百分比数值（如 5 表示 5%）
-            return val / 100 if val > 1 else val
+            # 如果绝对值 > 1，假设直接是百分比数值（如 5 表示 5%，-5 表示 -5%）
+            return val / 100 if abs(val) > 1 else val
         except ValueError:
             return None
