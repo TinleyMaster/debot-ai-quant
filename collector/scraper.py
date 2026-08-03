@@ -405,48 +405,109 @@ class DebotScraper:
             except Exception:
                 break
 
-    def _parse_signal_list(self) -> List[dict]:
-        """解析页面信号列表"""
-        signals = []
-        max_signals = self.scrape_rules.get("max_signals_per_run", 50)
-
-        # 查找信号卡片容器
-        container_selector = self.selectors.get("signal_list", ".signal-card")
+    def _find_detail_cards(self) -> list:
+        """
+        查找页面上所有"详情卡片"（含完整 AI 信号信息的卡片）。
+        方法：用 JS 找出同时含 "Top10" + "smart wallets" + "Market Cap"
+        且包含代币链接的卡片容器元素，加特殊属性标记后返回 ElementHandle 列表。
+        """
+        js_script = """
+            () => {
+                // 收集所有含 Top10 + smart wallets + Market Cap 且长度合适、含代币链接的元素
+                const all = document.querySelectorAll('*');
+                const candidates = [];
+                for (const el of all) {
+                    const txt = (el.innerText || '').trim();
+                    if (txt.length < 200 || txt.length > 3000) continue;
+                    if (txt.indexOf('Top10') < 0) continue;
+                    if (txt.indexOf('smart wallets') < 0) continue;
+                    if (txt.indexOf('Market Cap') < 0) continue;
+                    if (!el.querySelector('a[href*="/token/solana/"]')) continue;
+                    candidates.push(el);
+                }
+                // 只保留最内层卡片（没有其他候选是其子元素）
+                const cards = candidates.filter(c => {
+                    return !candidates.some(other => other !== c && c.contains(other));
+                });
+                // 加特殊属性标记，Python 侧用选择器获取
+                cards.forEach((c, i) => c.setAttribute('data-scraper-detail', i));
+                return cards.length;
+            }
+        """
         try:
-            cards = self._page.query_selector_all(container_selector)
-            if not cards:
-                # 尝试备选选择器
+            count = self._page.evaluate(js_script)
+            if count and count > 0:
+                return self._page.query_selector_all("[data-scraper-detail]")
+        except Exception as e:
+            logger.warning(f"查找详情卡片失败: {e}")
+        return []
+
+    def _parse_signal_list(self) -> List[dict]:
+        """解析页面信号列表
+
+        页面有两类卡片：
+        1) 详情信号卡片（含 AI报告/倍数/价格/持有人等完整字段）→ 优先抓取
+        2) 活跃度榜单卡片（只有 24h涨跌幅/成交量/排名）→ 补充
+        """
+        signals = []
+        seen = set()  # 去重: contract_address + signal_time
+        max_signals = self.scrape_rules.get("max_signals_per_run", 50)
+        container_selector = self.selectors.get("signal_list", ".signal-card")
+
+        # ---- 第 1 步: 优先找详情卡片（用 JS 直接定位含"报告"的卡片容器） ----
+        detail_cards_raw = self._find_detail_cards()
+        logger.info(f"直接定位到 {len(detail_cards_raw)} 张详情卡片")
+
+        # ---- 第 2 步: 找所有代币链接卡片（活跃度等）----
+        all_link_cards = []
+        try:
+            all_link_cards = self._page.query_selector_all(container_selector)
+            if not all_link_cards:
                 for alt_sel in container_selector.split(",")[1:]:
-                    cards = self._page.query_selector_all(alt_sel.strip())
-                    if cards:
-                        logger.info(f"使用备选选择器匹配到 {len(cards)} 个卡片: {alt_sel}")
+                    all_link_cards = self._page.query_selector_all(alt_sel.strip())
+                    if all_link_cards:
                         break
         except Exception as e:
-            logger.error(f"查找信号卡片失败: {e}")
-            return []
+            logger.error(f"查找链接卡片失败: {e}")
 
-        logger.info(f"页面匹配到 {len(cards)} 个信号卡片元素")
+        logger.info(f"匹配到 {len(all_link_cards)} 个代币链接元素")
 
-        for i, card in enumerate(cards):
-            if len(signals) >= max_signals:
-                break
-
+        # ---- 第 3 步: 分离活跃度卡片（非详情卡的链接卡片） ----
+        activity_cards_raw = []
+        for card in all_link_cards:
             try:
-                # 过滤噪声卡片：innerText < 20 字符的跳过（logo 链接等）
                 raw = card.inner_text().strip()
                 if len(raw) < 20:
-                    logger.debug(f"卡片 #{i} innerText 过短 ({len(raw)}字符)，跳过")
                     continue
-
-                signal = self._parse_single_card(card)
-                if signal and signal.get("contract_address"):
-                    signals.append(signal)
-                else:
-                    logger.debug(f"卡片 #{i} 解析结果无效，跳过")
-            except Exception as e:
-                logger.warning(f"解析卡片 #{i} 失败: {e}")
+                if "报告" not in raw:
+                    activity_cards_raw.append(card)
+            except Exception:
                 continue
 
+        # ---- 第 4 步: 优先解析详情卡，再用活跃度卡补充 ----
+        def _parse_and_collect(card_list, label):
+            count = 0
+            for idx, card in enumerate(card_list):
+                if len(signals) >= max_signals:
+                    break
+                try:
+                    signal = self._parse_single_card(card)
+                    if signal and signal.get("contract_address"):
+                        key = (signal["contract_address"], signal.get("signal_time", ""))
+                        if key not in seen:
+                            seen.add(key)
+                            signals.append(signal)
+                            count += 1
+                except Exception as e:
+                    logger.warning(f"解析{label}卡片 #{idx} 失败: {e}")
+                    continue
+            return count
+
+        detail_count = _parse_and_collect(detail_cards_raw, "详情")
+        activity_count = _parse_and_collect(activity_cards_raw, "活跃度")
+
+        logger.info(f"本轮解析完成: 共 {len(signals)} 条信号 "
+                    f"(详情 {detail_count} 条 / 活跃度 {activity_count} 条)")
         return signals
 
     def _parse_single_card(self, card) -> Optional[dict]:
@@ -463,21 +524,78 @@ class DebotScraper:
         is_link = (tag_name == "a")
 
         if not is_link:
-            # 非链接类型卡片（备用方案）
-            contract = self._safe_extract_text_in_element(card, self.selectors.get("contract_address", ""))
-            signal["contract_address"] = self._clean_contract_address(contract)
-            signal["token_symbol"] = self._safe_extract_text_in_element(card, self.selectors.get("token_symbol", ""))
-            signal["source_url"] = self._safe_extract_href_in_element(card, self.selectors.get("source_url", ""))
+            # 非链接类型卡片（详情卡片等容器元素）
             raw_text = card.inner_text().strip()
-            time_text = self._safe_extract_text_in_element(card, self.selectors.get("signal_time", ""))
-            signal["signal_time"] = self._parse_time(time_text)
-            pool_text = self._safe_extract_text_in_element(card, self.selectors.get("pool_value", ""))
-            signal["pool_value"] = self._parse_number(pool_text) or self._extract_pool_value_from_text(raw_text)
-            holder_text = self._safe_extract_text_in_element(card, self.selectors.get("holder_rate", ""))
-            signal["holder_rate"] = self._parse_percentage(holder_text) or self._extract_holder_rate_from_text(raw_text)
-            signal["signal_content"] = self._safe_extract_text_in_element(card, self.selectors.get("signal_content", ""))
-            if not signal["signal_content"]:
-                signal["signal_content"] = self._extract_signal_content_from_text(raw_text, signal.get("token_symbol", ""))
+            if not raw_text:
+                return None
+
+            # 从卡片内部的第一个代币链接提取合约地址和 source_url
+            inner_link = card.query_selector("a[href*='/token/solana/']")
+            if inner_link:
+                href = inner_link.get_attribute("href") or ""
+                signal["contract_address"] = self._extract_contract_from_url(href)
+                signal["source_url"] = href if href.startswith("http") else f"{self.base_url}{href}"
+            else:
+                contract = self._safe_extract_text_in_element(
+                    card, self.selectors.get("contract_address", ""))
+                signal["contract_address"] = self._clean_contract_address(contract)
+                signal["source_url"] = ""
+
+            # 检测卡片类型（详情卡片含 Top10 + smart wallets + Market Cap）
+            is_detail = ("Top10" in raw_text
+                         and "smart wallets" in raw_text
+                         and "Market Cap" in raw_text)
+
+            # 初始化所有字段
+            signal["token_symbol"] = ""
+            signal["pool_value"] = None
+            signal["holder_rate"] = None
+            signal["signal_content"] = ""
+            signal["signal_time"] = None
+            signal["market_cap"] = None
+            signal["market_cap_prev"] = None
+            signal["holders_count"] = None
+            signal["price_usd"] = None
+            signal["price_usd_prev"] = None
+            signal["token_age"] = None
+            signal["smart_wallets"] = None
+            signal["avg_buy_amount"] = None
+            signal["multiplier"] = None
+
+            if is_detail:
+                lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
+                self._parse_detail_card(lines, signal)
+            else:
+                # 活跃度卡片：使用选择器 + 正则兜底
+                signal["token_symbol"] = self._safe_extract_text_in_element(
+                    card, self.selectors.get("token_symbol", ""))
+                time_text = self._safe_extract_text_in_element(
+                    card, self.selectors.get("signal_time", ""))
+                signal["signal_time"] = self._parse_time(time_text)
+                pool_text = self._safe_extract_text_in_element(
+                    card, self.selectors.get("pool_value", ""))
+                signal["pool_value"] = self._parse_number(
+                    pool_text) or self._extract_pool_value_from_text(raw_text)
+                holder_text = self._safe_extract_text_in_element(
+                    card, self.selectors.get("holder_rate", ""))
+                signal["holder_rate"] = self._parse_percentage(
+                    holder_text) or self._extract_holder_rate_from_text(raw_text)
+                signal["signal_content"] = self._safe_extract_text_in_element(
+                    card, self.selectors.get("signal_content", ""))
+                if not signal["signal_content"]:
+                    signal["signal_content"] = self._extract_signal_content_from_text(
+                        raw_text, signal.get("token_symbol", ""))
+
+            # 兜底：token_symbol 为空时用正则从文本提取
+            if not signal["token_symbol"]:
+                lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
+                if lines:
+                    signal["token_symbol"] = lines[0][:128]
+
+            # 兜底：signal_time 为空时使用当前时间
+            if signal.get("signal_time") is None:
+                signal["signal_time"] = datetime.now(UTC).isoformat()
+
             return signal
 
         # --- bella8 <a> 链接卡片 ---
@@ -489,8 +607,10 @@ class DebotScraper:
         raw_text = card.inner_text().strip()
         lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
 
-        # 检测卡片类型（页面实际显示"报告"，非"AI报告"）
-        is_detail = "报告" in raw_text
+        # 检测卡片类型（详情卡片含 Top10 + smart wallets + Market Cap）
+        is_detail = ("Top10" in raw_text
+                     and "smart wallets" in raw_text
+                     and "Market Cap" in raw_text)
 
         # 初始化字段
         signal["token_symbol"] = ""
@@ -524,12 +644,46 @@ class DebotScraper:
         return signal
 
     def _parse_activity_card(self, lines: list, signal: dict):
-        """解析 5分钟活跃度榜单卡片
+        """解析活跃度榜单卡片
 
-        格式: TOKEN_NAME, +X.X%, $X.XM/K (市值无标签), NNN, /, NNN, #N
-        或:   TOKEN_NAME, +X.X%, MC, $X.XM/K, TXs, NNN, /, NNN, #N
+        实际结构（7-8行）:
+          [0] TOKEN_NAME 或 标记字母(如 "M")
+          [1] 代币名（当 [0] 是标记时） 或 +X.X%（涨跌幅）
+          [+/-X.X%]    (涨跌幅)
+          MC           (标签)
+          $X.XK/M      (市值)
+          TXs          (标签)
+          NNN/NNN      (买卖笔数) 或 NNN + / + NNN(三行)
+          #N           (排名)
+
+        第0行如果是单个字母/短标记（长度<=2 且不是百分比），第1行才是代币名。
         """
-        signal["token_symbol"] = lines[0][:128] if lines else ""
+        # 代币名: 找到第一个看起来像代币名的行（不是涨跌幅、不是标记、不是标签）
+        token_name = ""
+        for j, line in enumerate(lines):
+            if not line:
+                continue
+            # 跳过涨跌幅行
+            if (line.startswith("+") or line.startswith("-")) and "%" in line:
+                continue
+            # 跳过标签
+            if line.upper() in ("MC", "TXS", "TX", "LIQ"):
+                break
+            # 跳过$开头、#开头
+            if line.startswith("$") or line.startswith("#"):
+                continue
+            # 跳过纯数字
+            if re.match(r'^[\d.,]+$', line):
+                continue
+            # 跳过短标记（单字母或非常短的标记词）
+            # 但如果是第二个可行行且前一个是短标记，就取这个
+            if len(line) <= 2 and j == 0:
+                continue
+            # 看起来像代币名
+            if re.match(r'^[\w$:.\-+]+$', line) and len(line) >= 2:
+                token_name = line[:128]
+                break
+        signal["token_symbol"] = token_name
 
         content_parts = []  # 累积信号信息而非覆盖
         i = 1
@@ -594,101 +748,176 @@ class DebotScraper:
                     break
 
     def _parse_detail_card(self, lines: list, signal: dict):
-        """解析详细信号卡片
-        
-        格式: buy_buttons, ATH, $value, rank, 弃权, 黑名单, Top10, X%,
-              HH:MM:SS, TOKEN_NAME, CHINESE_NAME, AGE, CONTRACT_SHORT,
-              AI报告, 倍数, smart_wallets, 同时买入, 平均买入金额, $value,
-              市值, $current, $prev, 持有人, N, N, 价格, $curr, $prev,
-              流动池, $curr, $prev
+        """解析详细信号卡片（英文标签版本，已验证的完整结构）
+
+        完整结构 (33-34行):
+          [ 0] "12" / "2" / "M" 等   (左边栏数字/标记，跳过)
+          [ 1] "No Mint"             (风险标记1，可选)
+          [ 2] "Blacklist"           (风险标记2，可选)
+          [ 3] "Top10"               ← Top10 标签
+          [ 4] "27.7%"               ← Top10 比例
+          [ 5] "10:27:37"            ← 信号时间 (HH:MM:SS)
+          [ 6] "MADLADS"             ← 代币名 (或第6行是"Live"等状态，第7行才是代币名)
+          [ 7] "30m"                 ← 代币年龄 (1d/2h/30m/865d)
+          [ 8] "4sYb...XpZ9"         (短合约地址，跳过，从 href 取)
+          [ 9] "AI"                  (标签，跳过)
+          [10] "1x" / "48"           (倍数 或 涨幅数字)
+          [11] "%"                   (当涨幅数字单独成行时，下一行是 %)
+          [12] "3 smart wallets"     (聪明钱包数)
+          [13] "Buy"                 (标签，跳过)
+          [14] "Avg Buy"
+          [15] "$301.68"             (平均买入金额)
+          [16] "Market Cap"
+          [17] "$43.6K"              (当前市值)
+          [18] "$76.5K"              (前市值)
+          [19] "Holder"
+          [20] "122"                 (当前持有人，可能带逗号: 1,781)
+          [21] "213"                 (前持有人)
+          [22] "Price"
+          [23] "$0.0₄4356"           (当前价格，下标数字格式)
+          [24] "$0.0₄7648"           (前价格)
+          [25] "Liq"
+          [26] "$16.2K"              (当前流动池)
+          [27] "$23.5K"              (前流动池)
+          [28-31] "0.01"/"0.1"/"0.5"/"1"  (进度条刻度，跳过)
+          [32] "ATH"
+          [33] "$41.2K"              (ATH市值，跳过)
+
+        说明:
+        - 风险标记数量不固定（0-3个不等，如 No Mint, Blacklist, Mint 等）
+        - "Top10" 标签和百分比行是固定的
+        - 时间行是固定格式 HH:MM:SS
+        - 时间行之后的第一个看起来像代币名的行就是代币名
+        - 代币名后面是年龄（d/h/m 格式）
         """
         n = len(lines)
+
+        # === 定位关键行索引 ===
+        top10_idx = None
+        time_idx = None
+        ai_idx = None
+
+        for i, ls in enumerate(lines):
+            if ls == "Top10" and top10_idx is None:
+                top10_idx = i
+            if re.match(r'^\d{1,2}:\d{2}:\d{2}$', ls) and time_idx is None:
+                time_idx = i
+            if ls == "AI" and ai_idx is None:
+                ai_idx = i
+
+        # --- Top10 持仓比例 ---
+        if top10_idx is not None and top10_idx + 1 < n:
+            signal["holder_rate"] = self._parse_percentage(lines[top10_idx + 1])
+
+        # --- 信号时间 ---
+        if time_idx is not None:
+            signal["signal_time"] = self._parse_time(lines[time_idx])
+
+        # --- 代币名: 时间行之后、年龄行之前、AI行之前 ---
+        if time_idx is not None and not signal.get("token_symbol"):
+            # 从时间行下一行开始，到 AI 行之前，找看起来像代币名的
+            end = ai_idx if ai_idx is not None else min(time_idx + 6, n)
+            for j in range(time_idx + 1, end):
+                candidate = lines[j].strip()
+                if not candidate:
+                    continue
+                # 跳过年龄格式
+                if re.match(r'^\d+[dhms]$', candidate):
+                    break
+                # 跳过 LIVE 等状态词
+                if candidate in ("LIVE", "New", "Trending", "Hot", "Pinned"):
+                    continue
+                # 跳过合约地址
+                if "pump" in candidate.lower() and len(candidate) > 10:
+                    break
+                # 跳过纯数字、百分比、$开头、#开头
+                if (candidate.startswith("$")
+                        or candidate.startswith("#")
+                        or candidate.endswith("%")
+                        or re.match(r'^[\d.,]+$', candidate)):
+                    continue
+                # 代币名：字母数字符号组合，长度 2-32
+                if re.match(r'^[\w$:.\-+]+$', candidate) and 2 <= len(candidate) <= 32:
+                    signal["token_symbol"] = candidate[:128]
+                    break
+
+        # --- 代币年龄 (d/h/m 格式) ---
+        # 在时间行之后、AI 行之前找
+        if signal.get("token_age") is None:
+            start = time_idx + 1 if time_idx is not None else 0
+            end = ai_idx if ai_idx is not None else min(start + 5, n)
+            for j in range(start, end):
+                if re.match(r'^\d+[dhms]$', lines[j]):
+                    signal["token_age"] = lines[j]
+                    break
 
         for i, line in enumerate(lines):
             ls = line.strip()
 
-            # Top10 holder %
-            if ls == "Top10" and i + 1 < n:
-                signal["holder_rate"] = self._parse_percentage(lines[i + 1])
-
-            # 信号时间 (HH:MM:SS)
-            if re.match(r'^\d{1,2}:\d{2}:\d{2}$', ls):
-                signal["signal_time"] = self._parse_time(ls)
-
-            # 代币年龄 (如 "31d", "2h", "5m")
-            if re.match(r'^\d+[dhms]$', ls) and signal.get("token_age") is None:
-                signal["token_age"] = ls
-
-            # 代币名: 下一个非数字行，在 Top10 和时间之后
-            if (signal.get("token_symbol", "") == "" and ls
-                    and ls not in ("ATH", "Top10", "AI报告", "报告", "同时买入", "平均买入金额",
-                                   "市值", "持有人", "价格", "流动池", "弃权", "黑名单")
-                    and not re.match(r'^[\d.,]+$', ls)
-                    and not re.match(r'^\d+[dhms]$', ls)  # age like "31d"
-                    and not re.match(r'^\d{1,2}:\d{2}:\d{2}$', ls)  # time like 14:23:45
-                    and not ls.startswith("$")
-                    and not ls.startswith("<")
-                    and not ls.startswith("#")
-                    and not ls.endswith("x")
-                    and not ls.endswith("%")
-                    and not "pump" in ls.lower()
-                    and len(ls) > 1):
-                signal["token_symbol"] = ls[:128]
-
-            # 市值: 当前值 + 前值
-            if ls == "市值" and i + 1 < n:
-                signal["market_cap"] = self._parse_number(lines[i + 1])
-                if i + 2 < n:
-                    signal["market_cap_prev"] = self._parse_number(lines[i + 2])
-                # pool_value 用市值作为流动池的近似
-                if signal.get("pool_value") is None:
-                    signal["pool_value"] = signal["market_cap"]
-
-            # 持有人数量
-            if ls == "持有人" and i + 1 < n:
-                count_str = lines[i + 1]
-                try:
-                    signal["holders_count"] = int(count_str.replace(",", ""))
-                except (ValueError, TypeError):
-                    pass
-
-            # 价格: 当前值 + 前值
-            if ls == "价格" and i + 1 < n:
-                signal["price_usd"] = self._parse_number(lines[i + 1])
-                if i + 2 < n:
-                    signal["price_usd_prev"] = self._parse_number(lines[i + 2])
-
-            # 流动池 (兜底 pool_value)
-            if ls == "流动池" and i + 1 < n:
-                pool_val = self._parse_number(lines[i + 1])
-                if pool_val is not None and signal.get("pool_value") is None:
-                    signal["pool_value"] = pool_val
-
-            # 倍数如 4x, 12x, <1x
-            if re.match(r'^<?\d+\.?\d*x$', ls) or (ls.startswith("<") and ls.endswith("x")):
-                if signal.get("multiplier") is None:
-                    signal["multiplier"] = ls
+            # --- 倍数 ---
+            # 形如 2x, 12x, <1x, 0.5x
+            if (re.match(r'^<?\d+\.?\d*x$', ls)
+                    and signal.get("multiplier") is None
+                    and ls != "x"):
+                signal["multiplier"] = ls
                 if signal["signal_content"]:
                     signal["signal_content"] += "; "
                 signal["signal_content"] += f"倍数: {ls}"
 
-            # 聪明钱包数量
-            elif "聪明钱包" in ls or "聪明钱" in ls:
+            # --- 倍数/涨幅: 纯数字 + 下一行是 "%" ---
+            if (re.match(r'^\d+\.?\d*$', ls)
+                    and i + 1 < n
+                    and lines[i + 1].strip() == "%"
+                    and signal.get("multiplier") is None):
+                pct = f"{ls}%"
+                signal["multiplier"] = pct
+                if signal["signal_content"]:
+                    signal["signal_content"] += "; "
+                signal["signal_content"] += f"涨幅: {pct}"
+
+            # --- 聪明钱包数量: "3 smart wallets" ---
+            if "smart wallets" in ls:
                 if signal["signal_content"]:
                     signal["signal_content"] += "; "
                 signal["signal_content"] += ls
-                # 提取数字
                 m = re.search(r'(\d+)', ls)
                 if m and signal.get("smart_wallets") is None:
                     signal["smart_wallets"] = int(m.group(1))
 
-            # 平均买入金额
-            elif ls == "平均买入金额" and i + 1 < n:
+            # --- 平均买入金额: Avg Buy + $值 ---
+            if ls in ("Avg Buy", "Avg Buy Amount") and i + 1 < n:
                 if signal["signal_content"]:
                     signal["signal_content"] += "; "
                 signal["signal_content"] += f"均买: {lines[i+1]}"
                 if signal.get("avg_buy_amount") is None:
                     signal["avg_buy_amount"] = self._parse_number(lines[i + 1])
+
+            # --- 市值: Market Cap + 当前值 + 前值 ---
+            if ls == "Market Cap" and i + 1 < n:
+                signal["market_cap"] = self._parse_number(lines[i + 1])
+                if i + 2 < n:
+                    signal["market_cap_prev"] = self._parse_number(lines[i + 2])
+                if signal.get("pool_value") is None:
+                    signal["pool_value"] = signal["market_cap"]
+
+            # --- 持有人数量: Holder + 当前 + 前 ---
+            if ls == "Holder" and i + 1 < n:
+                try:
+                    signal["holders_count"] = int(lines[i + 1].replace(",", ""))
+                except (ValueError, TypeError):
+                    pass
+
+            # --- 价格: Price + 当前 + 前 (可能含下标数字格式) ---
+            if ls == "Price" and i + 1 < n:
+                signal["price_usd"] = self._parse_number(lines[i + 1])
+                if i + 2 < n:
+                    signal["price_usd_prev"] = self._parse_number(lines[i + 2])
+
+            # --- 流动池: Liq + 当前 + 前 ---
+            if ls in ("Liq", "Liquidity") and i + 1 < n:
+                pool_val = self._parse_number(lines[i + 1])
+                if pool_val is not None:
+                    signal["pool_value"] = pool_val
 
     # ================================================================
     # 文本正则兜底提取 (选择器失败时的后备方案)
@@ -911,10 +1140,37 @@ class DebotScraper:
 
     @staticmethod
     def _parse_number(text: str) -> Optional[float]:
-        """解析金额文本为数字"""
+        """解析金额文本为数字。支持下标数字格式如 $0.0₄7582（₄表示4个0）。"""
         if not text:
             return None
         text = text.replace(",", "").replace("$", "").replace("¥", "").strip()
+
+        # 处理下标数字格式: 如 "0.0₄7582" -> 0.00007582
+        # 下标数字表示"小数点后的 0 的个数"
+        # 例如 0.0₄7582 表示小数点后有 4 个 0 然后是 7582
+        # Unicode 下标数字: ₀₁₂₃₄₅₆₇₈₉ (U+2080 - U+2089)
+        subscript_map = {
+            '₀': '0', '₁': '1', '₂': '2', '₃': '3', '₄': '4',
+            '₅': '5', '₆': '6', '₇': '7', '₈': '8', '₉': '9',
+        }
+        subscript_pattern = re.compile(r'([₀₁₂₃₄₅₆₇₈₉]+)')
+        m = subscript_pattern.search(text)
+        if m:
+            sub_digits = m.group(1)
+            zero_count = int(''.join(subscript_map[c] for c in sub_digits))
+            # 找到小数点位置
+            dot_idx = text.find('.')
+            if dot_idx >= 0:
+                # 保留整数部分和小数点，然后补 zero_count 个 0，再加下标后的数字
+                int_part = text[:dot_idx + 1]  # 如 "0."
+                after = text[m.end():]         # 如 "7582"
+                text = int_part + '0' * zero_count + after
+            else:
+                # 没有小数点，直接在数字间插零
+                before = text[:m.start()]
+                after = text[m.end():]
+                text = before + '0' * zero_count + after
+
         # 处理 K/M/B 后缀
         multipliers = {"K": 1e3, "M": 1e6, "B": 1e9}
         for suffix, mult in multipliers.items():
