@@ -25,6 +25,8 @@ from db import (
     insert_signal, insert_token_info, insert_run_log, insert_alert,
     get_latest_signal_time, get_unprocessed_count, get_latest_unresolved_alert,
     get_latest_signals, get_token_kline, get_all_tracked_tokens,
+    upsert_token_detail, insert_token_metric, upsert_signal_agg, insert_wallet_trades,
+    run_migrations,
 )
 from scraper import DebotScraper
 from api_client import DebotAPIClient, create_client_from_env
@@ -183,6 +185,7 @@ def run_once(scraper: DebotScraper = None, api_client: DebotAPIClient = None) ->
 
     try:
         with get_conn() as conn:
+            now_iso = datetime.now(timezone.utc).isoformat()
             for sig in signals:
                 try:
                     new_id = insert_signal(conn, sig)
@@ -191,6 +194,61 @@ def run_once(scraper: DebotScraper = None, api_client: DebotAPIClient = None) ->
                         _last_signal_time = sig.get("signal_time", "")
                         if stats["new"] <= 15:  # 只打印前 15 条，避免日志太多
                             logger.info(f"新信号入库: {sig.get('token_symbol', '?')} {sig['contract_address']}")
+
+                        # 代币详情（upsert，每次更新最新的）
+                        detail = {
+                            "contract_address": sig["contract_address"],
+                            "token_symbol": sig.get("token_symbol"),
+                            "token_name": sig.get("token_name"),
+                            "token_logo": sig.get("token_logo"),
+                            "creator_address": sig.get("creator_address"),
+                            "total_supply": sig.get("total_supply"),
+                            "launchpad": sig.get("launchpad"),
+                            "creation_time": _ts_to_iso(sig.get("creation_timestamp")),
+                            "is_mint_abandoned": sig.get("is_mint_abandoned"),
+                            "is_block_address": sig.get("is_block_address"),
+                            "debot_trust": sig.get("debot_trust"),
+                            "twitter": sig.get("twitter"),
+                            "website": sig.get("website"),
+                            "tags": sig.get("tags"),
+                        }
+                        upsert_token_detail(conn, detail)
+
+                        # 行情快照
+                        metric = {
+                            "contract_address": sig["contract_address"],
+                            "snapshot_time": now_iso,
+                            "price": sig.get("price_usd"),
+                            "market_cap": sig.get("market_cap"),
+                            "fdv": sig.get("fdv"),
+                            "liquidity": sig.get("pool_value"),
+                            "holder_count": sig.get("holders_count"),
+                            "top10_position": sig.get("holder_rate"),
+                            "volume_5m": sig.get("volume_5m"),
+                            "volume_1h": sig.get("volume_1h"),
+                            "volume_24h": sig.get("volume_24h"),
+                            "percent_5m": sig.get("percent_5m"),
+                            "percent_1h": sig.get("percent_1h"),
+                            "percent_24h": sig.get("percent_24h"),
+                            "pair_address": sig.get("pair_address"),
+                            "dex_name": sig.get("dex_name"),
+                        }
+                        insert_token_metric(conn, metric)
+
+                        # 信号累计统计（upsert）
+                        agg = {
+                            "contract_address": sig["contract_address"],
+                            "signal_count": sig.get("signal_count"),
+                            "first_signal_time": _ts_to_iso(sig.get("first_time")),
+                            "first_price": sig.get("first_price"),
+                            "max_price": sig.get("max_price"),
+                            "max_price_gain": sig.get("max_price_gain"),
+                        }
+                        upsert_signal_agg(conn, agg)
+
+                        # 聪明钱包交易明细
+                        if sig.get("wallet_stats_list"):
+                            insert_wallet_trades(conn, new_id, sig["contract_address"], sig["wallet_stats_list"])
                 except Exception as e:
                     stats["errors"] += 1
                     logger.error(f"信号入库失败: {e}")
@@ -205,6 +263,16 @@ def run_once(scraper: DebotScraper = None, api_client: DebotAPIClient = None) ->
     stats["duration_ms"] = int((time.time() - start_time) * 1000)
     _write_run_log(stats)
     return stats
+
+
+def _ts_to_iso(ts):
+    """Unix 时间戳转 ISO 字符串，None 返回 None"""
+    if not ts:
+        return None
+    try:
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
+    except (ValueError, TypeError):
+        return None
 
 
 def _write_run_log(stats: dict):
@@ -560,8 +628,10 @@ def main():
     # 初始化数据库连接池
     try:
         init_db_pool()
+        run_migrations()
+        logger.info("数据库迁移完成")
     except Exception as e:
-        logger.error(f"数据库连接失败: {e}")
+        logger.error(f"数据库初始化失败: {e}")
         logger.error("请检查数据库环境变量配置 (DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)")
         sys.exit(1)
 

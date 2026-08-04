@@ -64,6 +64,86 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='multiplier') THEN
         ALTER TABLE debot_signal ADD COLUMN multiplier VARCHAR(16);
     END IF;
+-- 已有数据库的增量迁移：第二波新增字段 (来自 API meta 全量数据)
+DO $$
+BEGIN
+    -- 代币基础信息
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='token_name') THEN
+        ALTER TABLE debot_signal ADD COLUMN token_name VARCHAR(128);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='token_logo') THEN
+        ALTER TABLE debot_signal ADD COLUMN token_logo VARCHAR(512);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='creator_address') THEN
+        ALTER TABLE debot_signal ADD COLUMN creator_address VARCHAR(64);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='total_supply') THEN
+        ALTER TABLE debot_signal ADD COLUMN total_supply NUMERIC(36);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='launchpad') THEN
+        ALTER TABLE debot_signal ADD COLUMN launchpad VARCHAR(32);
+    END IF;
+    -- 行情补充
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='fdv') THEN
+        ALTER TABLE debot_signal ADD COLUMN fdv NUMERIC(24, 6);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='volume_5m') THEN
+        ALTER TABLE debot_signal ADD COLUMN volume_5m NUMERIC(24, 6);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='volume_1h') THEN
+        ALTER TABLE debot_signal ADD COLUMN volume_1h NUMERIC(24, 6);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='volume_24h') THEN
+        ALTER TABLE debot_signal ADD COLUMN volume_24h NUMERIC(24, 6);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='percent_5m') THEN
+        ALTER TABLE debot_signal ADD COLUMN percent_5m NUMERIC(12, 8);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='percent_1h') THEN
+        ALTER TABLE debot_signal ADD COLUMN percent_1h NUMERIC(12, 8);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='percent_24h') THEN
+        ALTER TABLE debot_signal ADD COLUMN percent_24h NUMERIC(12, 8);
+    END IF;
+    -- DEX 信息
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='pair_address') THEN
+        ALTER TABLE debot_signal ADD COLUMN pair_address VARCHAR(64);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='dex_name') THEN
+        ALTER TABLE debot_signal ADD COLUMN dex_name VARCHAR(32);
+    END IF;
+    -- 信号统计
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='signal_count') THEN
+        ALTER TABLE debot_signal ADD COLUMN signal_count INT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='first_price') THEN
+        ALTER TABLE debot_signal ADD COLUMN first_price NUMERIC(24, 12);
+    END IF;
+    -- 安全检测
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='is_mint_abandoned') THEN
+        ALTER TABLE debot_signal ADD COLUMN is_mint_abandoned BOOLEAN;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='is_block_address') THEN
+        ALTER TABLE debot_signal ADD COLUMN is_block_address BOOLEAN;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='debot_trust') THEN
+        ALTER TABLE debot_signal ADD COLUMN debot_trust BOOLEAN;
+    END IF;
+    -- 社交
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='twitter') THEN
+        ALTER TABLE debot_signal ADD COLUMN twitter VARCHAR(512);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='website') THEN
+        ALTER TABLE debot_signal ADD COLUMN website VARCHAR(512);
+    END IF;
+    -- 标签（逗号分隔）
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='tags') THEN
+        ALTER TABLE debot_signal ADD COLUMN tags VARCHAR(256);
+    END IF;
+    -- 钱包明细（JSONB，便于查询）
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='debot_signal' AND column_name='wallet_stats') THEN
+        ALTER TABLE debot_signal ADD COLUMN wallet_stats JSONB;
+    END IF;
 END $$;
 
 -- 索引
@@ -71,6 +151,95 @@ CREATE INDEX IF NOT EXISTS idx_signal_time ON debot_signal(signal_time DESC);
 CREATE INDEX IF NOT EXISTS idx_signal_contract ON debot_signal(contract_address);
 CREATE INDEX IF NOT EXISTS idx_signal_processed ON debot_signal(is_processed) WHERE is_processed = FALSE;
 CREATE INDEX IF NOT EXISTS idx_signal_create_time ON debot_signal(create_time DESC);
+
+
+-- ============================================
+-- 表1.1: debot_token_detail 代币详情表（来自 Debot API meta）
+-- ============================================
+CREATE TABLE IF NOT EXISTS debot_token_detail (
+    contract_address  VARCHAR(128) PRIMARY KEY,
+    token_symbol      VARCHAR(128),
+    token_name        VARCHAR(128),
+    token_logo        VARCHAR(512),
+    creator_address   VARCHAR(64),
+    total_supply      NUMERIC(36),
+    launchpad         VARCHAR(32),
+    creation_time     TIMESTAMPTZ,
+    -- 安全信息
+    is_mint_abandoned BOOLEAN,
+    is_block_address  BOOLEAN,
+    debot_trust       BOOLEAN,
+    -- 社交
+    twitter           VARCHAR(512),
+    website           VARCHAR(512),
+    tags              VARCHAR(256),
+    update_time       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_detail_symbol ON debot_token_detail(token_symbol);
+CREATE INDEX IF NOT EXISTS idx_detail_launchpad ON debot_token_detail(launchpad);
+
+
+-- ============================================
+-- 表1.2: debot_token_metric 代币行情快照（每次采集时写入）
+-- ============================================
+CREATE TABLE IF NOT EXISTS debot_token_metric (
+    id                BIGSERIAL PRIMARY KEY,
+    contract_address  VARCHAR(128) NOT NULL,
+    snapshot_time     TIMESTAMPTZ NOT NULL,
+    price             NUMERIC(24, 12),
+    market_cap        NUMERIC(24, 6),
+    fdv               NUMERIC(24, 6),
+    liquidity         NUMERIC(24, 6),
+    holder_count      INT,
+    top10_position    NUMERIC(6, 4),
+    volume_5m         NUMERIC(24, 6),
+    volume_1h         NUMERIC(24, 6),
+    volume_24h        NUMERIC(24, 6),
+    percent_5m        NUMERIC(12, 8),
+    percent_1h        NUMERIC(12, 8),
+    percent_24h       NUMERIC(12, 8),
+    pair_address      VARCHAR(64),
+    dex_name          VARCHAR(32)
+);
+
+CREATE INDEX IF NOT EXISTS idx_metric_contract ON debot_token_metric(contract_address);
+CREATE INDEX IF NOT EXISTS idx_metric_snapshot ON debot_token_metric(snapshot_time DESC);
+CREATE INDEX IF NOT EXISTS idx_metric_dex ON debot_token_metric(dex_name);
+
+
+-- ============================================
+-- 表1.3: debot_signal_agg 代币信号累计统计
+-- ============================================
+CREATE TABLE IF NOT EXISTS debot_signal_agg (
+    contract_address  VARCHAR(128) PRIMARY KEY,
+    signal_count      INT,
+    first_signal_time TIMESTAMPTZ,
+    first_price       NUMERIC(24, 12),
+    max_price         NUMERIC(24, 12),
+    max_price_gain    NUMERIC(12, 6),
+    update_time       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+-- ============================================
+-- 表1.4: debot_wallet_trade 聪明钱包交易明细
+-- ============================================
+CREATE TABLE IF NOT EXISTS debot_wallet_trade (
+    id                BIGSERIAL PRIMARY KEY,
+    signal_id         BIGINT REFERENCES debot_signal(id) ON DELETE CASCADE,
+    contract_address  VARCHAR(128) NOT NULL,
+    wallet_alias      VARCHAR(64),
+    wallet_address    VARCHAR(64),
+    amount            NUMERIC(36),
+    price             NUMERIC(24, 12),
+    volume_usd        NUMERIC(24, 6),
+    trade_time        TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_wallet_signal ON debot_wallet_trade(signal_id);
+CREATE INDEX IF NOT EXISTS idx_wallet_contract ON debot_wallet_trade(contract_address);
+CREATE INDEX IF NOT EXISTS idx_wallet_alias ON debot_wallet_trade(wallet_alias);
 
 
 -- ============================================

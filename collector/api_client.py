@@ -390,10 +390,27 @@ class DebotAPIClient:
                 age_seconds = int(time.time()) - creation_ts
                 token_age = self._format_duration(age_seconds)
 
+            # 安全信息解析（结构: {"solana": {is_mint_abandoned, is_block_address}, "debot_trust": true}）
+            sol_safe = safe_info.get("solana", {}) if isinstance(safe_info, dict) else {}
+            def _to_bool_flag(val):
+                if val is None:
+                    return None
+                return bool(val)
+            is_mint_abandoned = _to_bool_flag(sol_safe.get("is_mint_abandoned"))
+            is_block_address = _to_bool_flag(sol_safe.get("is_block_address"))
+            debot_trust = safe_info.get("debot_trust") if isinstance(safe_info, dict) else None
+
             return {
                 "signal_time": signal_time.isoformat(),
                 "contract_address": contract_address,
                 "token_symbol": symbol,
+                "token_name": token_name,
+                "token_logo": token_data.get("logo"),
+                "creator_address": token_data.get("creator_address"),
+                "total_supply": token_data.get("total_supply"),
+                "launchpad": token_data.get("launchpad"),
+                "channel_id": result.get("channel_id"),
+                "group_name": result.get("group_name"),
                 "pool_value": liquidity,
                 "holder_rate": top10_position,
                 "signal_content": signal_content,
@@ -404,9 +421,30 @@ class DebotAPIClient:
                 "price_usd": price_usd,
                 "price_usd_prev": None,
                 "token_age": token_age,
+                "creation_timestamp": creation_ts,  # unix 时间戳，秒
                 "smart_wallets": smart_wallets,
                 "avg_buy_amount": avg_buy,
                 "multiplier": multiplier,
+                "fdv": fdv,
+                "volume_5m": ts.get("volume_5minutes"),
+                "volume_1h": ts.get("volume_1h"),
+                "volume_24h": ts.get("volume_24h"),
+                "percent_5m": percent_5m,
+                "percent_1h": percent_1h,
+                "percent_24h": ts.get("percent24h"),
+                "pair_address": metrics.get("pair"),
+                "dex_name": metrics.get("dex_name"),
+                "signal_count": signal_count,
+                "first_price": first_price,
+                "first_time": first_time,  # unix 时间戳，秒
+                "is_mint_abandoned": is_mint_abandoned,
+                "is_block_address": is_block_address,
+                "debot_trust": debot_trust,
+                "twitter": social_info.get("twitter"),
+                "website": social_info.get("website"),
+                "tags": ",".join(token_tags) if token_tags else None,
+                # wallet_stats_list: 原始 list（给写入明细表用）
+                "wallet_stats_list": wallet_stats if wallet_stats else [],
             }
         except Exception as e:
             token_addr = result.get('token') if result else 'unknown'
