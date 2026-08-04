@@ -864,7 +864,7 @@ function renderSignalTable(signals) {
 
     html += `<tr>
       <td class="signal-time-cell"><div class="time-main">${t.main}</div><div class="time-rel">${t.rel}</div></td>
-      <td><b>${s.token_symbol || '?'}</b></td>
+      <td><b style="color:#58a6ff;cursor:pointer;text-decoration:underline" onclick="event.stopPropagation();viewSignalKline('${s.contract_address}','${s.token_symbol||'?'}','${s.signal_time||''}')">${s.token_symbol || '?'}</b></td>
       <td><a class="contract-link" href="https://debot.ai/token/solana/${s.contract_address}" target="_blank">${s.contract_address.slice(0,6)}...${s.contract_address.slice(-4)}</a></td>
       <td class="token-price">${fmtPrice(s.price_usd)}</td>
       <td>${fmtCompact(s.market_cap || s.pool_value, 0)}</td>
@@ -1124,7 +1124,35 @@ async function viewTradeKline(contract, symbol) {
   await loadKline(related);
 }
 
-async function loadKline(trades) {
+// 从最新信号跳转到 K 线，标注信号告警时间
+let pendingSignalAnnotations = null;
+
+async function viewSignalKline(contract, symbol, signalTime) {
+  // 保存信号时间，供 loadKline 使用
+  if (signalTime) {
+    pendingSignalAnnotations = [{ time: signalTime, label: symbol + ' 信号' }];
+  } else {
+    pendingSignalAnnotations = null;
+  }
+  switchTab('kline');
+  document.getElementById('kline-address').value = contract;
+  // 同时更新下拉框选中
+  const sel = document.getElementById('token-select');
+  try {
+    // 如果该合约不在下拉列表中，先加载列表
+    if (!tokensLoaded) await loadTokenList();
+    for (let i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === contract) {
+        sel.selectedIndex = i;
+        break;
+      }
+    }
+  } catch(e) {}
+  await loadKline(null, pendingSignalAnnotations);
+}
+
+async function loadKline(trades, signalAnnotations) {
+  signalAnnotations = signalAnnotations || pendingSignalAnnotations;
   const addr = document.getElementById('kline-address').value.trim();
   if (!addr) {
     document.getElementById('chart-container').innerHTML = '<div class="empty">请选择代币或粘贴合约地址</div>';
@@ -1139,13 +1167,15 @@ async function loadKline(trades) {
       document.getElementById('chart-container').innerHTML = '<div class="empty">该代币暂无行情快照数据</div>';
       return;
     }
-    renderChart(data.kline, addr, trades);
+    renderChart(data.kline, addr, trades, signalAnnotations);
+    // 消费后清除
+    pendingSignalAnnotations = null;
   } catch(e) {
     document.getElementById('chart-container').innerHTML = `<div class="empty">加载失败: ${e.message}</div>`;
   }
 }
 
-function renderChart(klineData, addr, trades) {
+function renderChart(klineData, addr, trades, signalAnnotations) {
   document.getElementById('chart-container').innerHTML = '<canvas id="klineCanvas"></canvas>';
 
   const labels = klineData.map(d => {
@@ -1185,6 +1215,24 @@ function renderChart(klineData, addr, trades) {
       }
       if (bestBuy >= 0) buyPoints.push({index: bestBuy, price: t.entry_price_usd || prices[bestBuy]});
       if (bestSell >= 0) sellPoints.push({index: bestSell, price: t.exit_price_usd || prices[bestSell], reason: t.exit_reason || 'timeout'});
+    }
+  }
+
+  // 信号告警时间标注：在 kline 数据中找到最接近的索引
+  const signalMarkers = [];
+  if (signalAnnotations && signalAnnotations.length > 0) {
+    for (const sa of signalAnnotations) {
+      const st = sa.time ? new Date(sa.time).getTime() : 0;
+      if (st <= 0) continue;
+      let bestIdx = -1, minDiff = Infinity;
+      for (let i = 0; i < klineData.length; i++) {
+        const kt = new Date(klineData[i].snapshot_time).getTime();
+        const d = Math.abs(kt - st);
+        if (d < minDiff) { minDiff = d; bestIdx = i; }
+      }
+      if (bestIdx >= 0) {
+        signalMarkers.push({ index: bestIdx, label: sa.label, time: sa.time });
+      }
     }
   }
 
@@ -1258,6 +1306,47 @@ function renderChart(klineData, addr, trades) {
           text: `${addr.slice(0,8)}...${addr.slice(-6)} | ${klineData.length} 个快照 | 区间 ${changeSign}${pctChange.toFixed(2)}%`,
           color: '#8b949e', font: { size: 10 },
           padding: { bottom: 8 }
+        },
+        // 自定义插件：绘制信号告警时间竖线
+        signalLinePlugin: {
+          id: 'signalLinePlugin',
+          afterDraw(chart) {
+            if (!signalMarkers || signalMarkers.length === 0) return;
+            const ctx = chart.ctx;
+            const xAxis = chart.scales.x;
+            const yAxis = chart.scales.y;
+            const chartArea = chart.chartArea;
+
+            ctx.save();
+            for (const sm of signalMarkers) {
+              if (sm.index < 0 || sm.index >= chart.data.labels.length) continue;
+              const x = xAxis.getPixelForValue(sm.index);
+              if (x < chartArea.left || x > chartArea.right) continue;
+
+              // 竖虚线
+              ctx.beginPath();
+              ctx.setLineDash([6, 4]);
+              ctx.strokeStyle = '#f0883e';
+              ctx.lineWidth = 1.5;
+              ctx.moveTo(x, chartArea.top);
+              ctx.lineTo(x, chartArea.bottom);
+              ctx.stroke();
+              ctx.setLineDash([]);
+
+              // 顶部标签
+              const label = sm.label || '信号';
+              ctx.font = '10px -apple-system, sans-serif';
+              ctx.fillStyle = '#f0883e';
+              ctx.textAlign = 'center';
+              const textWidth = ctx.measureText(label).width;
+              // 标签背景
+              ctx.fillStyle = 'rgba(13,17,23,0.85)';
+              ctx.fillRect(x - textWidth/2 - 4, chartArea.top - 16, textWidth + 8, 16);
+              ctx.fillStyle = '#f0883e';
+              ctx.fillText(label, x, chartArea.top - 4);
+            }
+            ctx.restore();
+          }
         }
       },
       scales: {
@@ -1291,15 +1380,22 @@ function renderChart(klineData, addr, trades) {
   document.getElementById('chart-container').style.position = 'relative';
   document.getElementById('chart-container').appendChild(label);
 
-  // 买卖点图例
+  // 图例：买卖点 + 信号时间
+  let legendParts = [];
   if (buyPoints.length > 0 || sellPoints.length > 0) {
+    legendParts.push('<span><span class="dot" style="background:#3fb950"></span> 买入</span>');
+    legendParts.push('<span><span class="dot" style="background:#3fb950"></span> 止盈</span>');
+    legendParts.push('<span><span class="dot" style="background:#f85149"></span> 止损</span>');
+    legendParts.push('<span><span class="dot" style="background:#d29922"></span> 超时</span>');
+  }
+  if (signalMarkers.length > 0) {
+    legendParts.push('<span><span class="dot" style="background:#f0883e"></span> 信号时间</span>');
+  }
+  if (legendParts.length > 0) {
     const legend = document.createElement('div');
     legend.className = 'kline-legend';
     legend.style.cssText = 'position:absolute;bottom:8px;left:12px;';
-    legend.innerHTML = '<span><span class="dot" style="background:#3fb950"></span> 买入</span>'
-      + '<span><span class="dot" style="background:#3fb950"></span> 止盈</span>'
-      + '<span><span class="dot" style="background:#f85149"></span> 止损</span>'
-      + '<span><span class="dot" style="background:#d29922"></span> 超时</span>';
+    legend.innerHTML = legendParts.join('');
     document.getElementById('chart-container').appendChild(legend);
   }
 }
