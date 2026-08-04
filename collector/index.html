@@ -93,9 +93,42 @@ tr:hover td{background:#161b22}
 .kline-panel .btn{flex-shrink:0}
 .chart-wrapper{position:relative;height:400px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px}
 .chart-wrapper canvas{width:100%!important;height:100%!important}
+.signal-time-cell .time-main{font-size:12px;font-weight:600;color:#c9d1d9}
+.signal-time-cell .time-rel{font-size:10px;color:#8b949e;margin-top:2px}
+.signal-group-tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:4px;background:#21262d;color:#8b949e;margin-bottom:2px}
+.signal-pct{font-size:12px;font-weight:600}
+.signal-pct.up{color:#3fb950}
+.signal-pct.down{color:#f85149}
 .token-price{font-family:monospace;font-size:11px}
 .price-up{color:#3fb950}
 .price-down{color:#f85149}
+#signal-table tbody tr{cursor:pointer;transition:background .15s}
+#signal-table tbody tr:hover{background:#161b22}
+.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:1000;backdrop-filter:blur(4px)}
+.modal{width:90%;max-width:900px;max-height:85vh;background:#0d1117;border:1px solid #30363d;border-radius:12px;display:flex;flex-direction:column;overflow:hidden}
+.modal-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #30363d;background:#161b22}
+.modal-header h3{font-size:16px;color:#f0f6fc;font-weight:600}
+.modal-close{background:none;border:none;color:#8b949e;font-size:20px;cursor:pointer;padding:4px 8px;border-radius:4px;transition:all .15s}
+.modal-close:hover{background:#21262d;color:#f0f6fc}
+.modal-body{flex:1;overflow-y:auto;padding:20px}
+.modal-section{margin-bottom:20px}
+.modal-section h4{font-size:12px;color:#58a6ff;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;padding-bottom:4px;border-bottom:1px solid #21262d}
+.detail-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
+.detail-item{background:#161b22;border:1px solid #21262d;border-radius:6px;padding:10px 12px}
+.detail-item .label{font-size:10px;color:#8b949e;text-transform:uppercase;margin-bottom:3px}
+.detail-item .value{font-size:13px;color:#c9d1d9;font-weight:500;word-break:break-all}
+.detail-item .value.up{color:#3fb950}
+.detail-item .value.down{color:#f85149}
+.wallet-list{display:flex;flex-direction:column;gap:6px}
+.wallet-row{display:flex;align-items:center;gap:10px;padding:8px 12px;background:#161b22;border:1px solid #21262d;border-radius:6px;font-size:12px}
+.wallet-row .alias{font-weight:600;color:#58a6ff;min-width:80px}
+.wallet-row .vol{color:#3fb950;margin-left:auto;font-weight:600}
+.tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:4px;background:#21262d;color:#8b949e;margin-right:6px}
+.tag.chain{background:#1f6feb22;color:#58a6ff}
+.tag.launch{background:#d2992233;color:#d29922}
+.safe-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+.safe-badge.safe{background:#23863633;color:#3fb950}
+.safe-badge.unsafe{background:#da363333;color:#f85149}
 </style>
 </head>
 <body>
@@ -726,12 +759,42 @@ async function loadSignals() {
 
 function formatSignalContent(raw) {
   if (!raw || raw === '-') return '-';
-  // 24h 涨跌着色
-  let html = raw.replace(/(24h:\s*)([+-][\d.]+%)/g,
-    (_, prefix, pct) => prefix + `<span class="${pct.startsWith('+') ? 'signal-24h-up' : 'signal-24h-down'}">${pct}</span>`);
-  // 排名 #N 徽章化
-  html = html.replace(/(^|\s)(#\d+)(?=\s|$)/g, '$1<span class="signal-rank">$2</span>');
-  return html;
+  try {
+    const obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const gname = obj.group_name || '';
+    const p24 = obj.percent_24h;
+    const v24 = obj.volume_24h;
+    const wcount = obj.wallet_count;
+    const avgVol = obj.avg_wallet_volume;
+    let html = '';
+    if (gname) {
+      // 提取组名中 # 后面的部分作为标签
+      const parts = gname.split('#');
+      const label = parts.slice(1).join(' · ');
+      html += `<div class="signal-group-tag">${label || gname}</div>`;
+    }
+    if (p24 != null && p24 !== '') {
+      const pct = (p24 * 100).toFixed(1) + '%';
+      const cls = p24 >= 0 ? 'up' : 'down';
+      const sign = p24 >= 0 ? '+' : '';
+      html += `<div><span class="signal-pct ${cls}">24h ${sign}${pct}</span>`;
+      if (wcount != null) html += ` · ${wcount}钱包`;
+      html += `</div>`;
+    } else if (wcount != null) {
+      html += `<div>${wcount} 个聪明钱包</div>`;
+    }
+    if (v24 != null && v24 > 0) {
+      const v = v24 >= 1e6 ? (v24/1e6).toFixed(1)+'M' : v24 >= 1e3 ? (v24/1e3).toFixed(1)+'K' : v24.toFixed(0);
+      html += `<div style="font-size:10px;color:#8b949e">Vol $${v}</div>`;
+    }
+    return html || raw.slice(0,40);
+  } catch(e) {
+    // 旧格式：纯文本
+    let html = raw.replace(/(24h:\s*)([+-][\d.]+%)/g,
+      (_, prefix, pct) => prefix + `<span class="${pct.startsWith('+') ? 'signal-24h-up' : 'signal-24h-down'}">${pct}</span>`);
+    html = html.replace(/(^|\s)(#\d+)(?=\s|$)/g, '$1<span class="signal-rank">$2</span>');
+    return html;
+  }
 }
 
 function renderSignalTable(signals) {
@@ -753,24 +816,54 @@ function renderSignalTable(signals) {
     if (p < 1) return '$'+p.toFixed(6);
     return '$'+p.toFixed(4);
   }
+  function fmtTime(iso) {
+    if (!iso) return { main: '-', rel: '-' };
+    const d = new Date(iso);
+    if (isNaN(d)) return { main: '-', rel: '-' };
+    const hh = String(d.getHours()).padStart(2,'0');
+    const mm = String(d.getMinutes()).padStart(2,'0');
+    const ss = String(d.getSeconds()).padStart(2,'0');
+    const ageMin = Math.floor((now - d) / 60000);
+    let rel;
+    if (ageMin < 1) rel = '刚刚';
+    else if (ageMin < 60) rel = ageMin + '分钟前';
+    else if (ageMin < 1440) rel = Math.floor(ageMin/60) + '小时前';
+    else rel = Math.floor(ageMin/1440) + '天前';
+    return { main: `${hh}:${mm}:${ss}`, rel };
+  }
 
   let html = `<div style="font-size:11px;color:#8b949e;margin-bottom:8px">共 ${signals.length} 条信号 · 自动刷新中</div>`;
   html += '<div class="strategy-table-wrap"><table id="signal-table"><thead><tr>';
-  html += '<th>时间</th><th>代币</th><th>合约</th><th>价格</th><th>市值</th><th>持有人</th><th>Top10</th><th>年龄</th><th>聪明钱</th><th>倍数</th><th>均买</th><th>信号</th>';
+  html += '<th>时间</th><th>代币</th><th>合约</th><th>价格</th><th>市值</th><th>持有人</th><th>Top10</th><th>年龄</th><th>聪明钱</th><th>倍数</th><th>均买</th><th>信号组</th>';
   html += '</tr></thead><tbody>';
   signals.forEach(s => {
-    const sigTime = s.signal_time ? new Date(s.signal_time) : null;
-    const age = sigTime ? Math.floor((now - sigTime) / 60000) : '?';
-    const ageStr = age < 1 ? '刚刚' : age < 60 ? `${age}分钟前` : age < 1440 ? `${Math.floor(age/60)}小时前` : `${Math.floor(age/1440)}天前`;
+    const t = fmtTime(s.signal_time);
     const holderRate = s.holder_rate != null ? (s.holder_rate*100).toFixed(0)+'%' : '-';
     const holders = s.holders_count != null ? s.holders_count.toLocaleString() : '-';
     const wallets = s.smart_wallets != null ? s.smart_wallets : '-';
-    const mult = s.multiplier || '-';
     const avgBuy = s.avg_buy_amount != null ? fmtCompact(s.avg_buy_amount, 0) : '-';
+
+    // 倍数列：优先显示 max_price_gain（如 8.6x），没有就显示 24h 涨跌
+    let multDisplay = '-';
+    if (s.multiplier) {
+      multDisplay = `<span class="signal-pct up">${s.multiplier}</span>`;
+    } else {
+      try {
+        const sc = typeof s.signal_content === 'string' ? JSON.parse(s.signal_content) : s.signal_content;
+        if (sc.percent_24h != null) {
+          const val = sc.percent_24h * 100;
+          const cls = val >= 0 ? 'up' : 'down';
+          const sign = val >= 0 ? '+' : '';
+          multDisplay = `<span class="signal-pct ${cls}">${sign}${val.toFixed(1)}%</span>`;
+        }
+      } catch(e) {}
+    }
+
+    // 信号组信息
     const signalInfo = formatSignalContent(s.signal_content || '');
 
     html += `<tr>
-      <td class="signal-time">${ageStr}</td>
+      <td class="signal-time-cell"><div class="time-main">${t.main}</div><div class="time-rel">${t.rel}</div></td>
       <td><b>${s.token_symbol || '?'}</b></td>
       <td><a class="contract-link" href="https://debot.ai/token/solana/${s.contract_address}" target="_blank">${s.contract_address.slice(0,6)}...${s.contract_address.slice(-4)}</a></td>
       <td class="token-price">${fmtPrice(s.price_usd)}</td>
@@ -779,13 +872,216 @@ function renderSignalTable(signals) {
       <td>${holderRate}</td>
       <td>${s.token_age || '-'}</td>
       <td>${wallets}</td>
-      <td>${mult}</td>
+      <td>${multDisplay}</td>
       <td>${avgBuy}</td>
       <td class="signal-content" title="${(s.signal_content || '').replace(/"/g,'&quot;')}">${signalInfo}</td>
     </tr>`;
   });
   html += '</tbody></table></div>';
   document.getElementById('content-signals').innerHTML = html;
+
+  // 绑定行点击事件
+  const rows = document.querySelectorAll('#signal-table tbody tr');
+  rows.forEach((row, i) => {
+    row.addEventListener('click', () => showSignalDetail(signals[i]));
+  });
+}
+
+// ============================================================
+// 信号详情弹窗
+// ============================================================
+function showSignalDetail(signal) {
+  let data = {};
+  try {
+    data = typeof signal.signal_content === 'string' ? JSON.parse(signal.signal_content) : signal.signal_content;
+  } catch(e) {}
+
+  const fmt = v => v == null ? '-' : (typeof v === 'number' ? (Math.abs(v) > 999 ? v.toLocaleString() : v.toFixed(6)) : v);
+  const fmtPct = v => v == null ? '-' : ((v*100).toFixed(2) + '%');
+  const fmtPctCol = v => v == null ? '-' : (v >= 0 ? `<span class="up">+${(v*100).toFixed(2)}%</span>` : `<span class="down">${(v*100).toFixed(2)}%</span>`);
+  const fmtUsd = v => {
+    if (v == null) return '-';
+    if (v >= 1e9) return '$' + (v/1e9).toFixed(2) + 'B';
+    if (v >= 1e6) return '$' + (v/1e6).toFixed(2) + 'M';
+    if (v >= 1e3) return '$' + (v/1e3).toFixed(2) + 'K';
+    return '$' + v.toFixed(2);
+  };
+  const fmtTime = ts => {
+    if (!ts) return '-';
+    const d = new Date(ts * 1000);
+    return d.toLocaleString('zh-CN');
+  };
+  const fmtPrice = p => {
+    if (p == null) return '-';
+    if (p < 0.0001) return '$' + p.toExponential(4);
+    if (p < 1) return '$' + p.toFixed(8);
+    return '$' + p.toFixed(4);
+  };
+
+  // 安全信息
+  const safeInfo = data.safe_info || {};
+  const solSafe = safeInfo.solana || safeInfo;
+  const isMintAbandoned = solSafe.is_mint_abandoned;
+  const isDebotTrust = solSafe.debot_trust;
+  const isBlocked = solSafe.is_block_address;
+
+  // 钱包列表
+  const wallets = data.wallet_stats || [];
+  const walletHtml = wallets.length ? wallets.map(w => `
+    <div class="wallet-row">
+      <span class="alias">${w.alias || '?'}</span>
+      <span style="color:#8b949e;font-family:monospace">${fmtPrice(parseFloat(w.price))}</span>
+      <span class="vol">${fmtUsd(parseFloat(w.volume))}</span>
+    </div>
+  `).join('') : '<div style="color:#8b949e">无钱包数据</div>';
+
+  // 标签
+  const tags = data.tags || [];
+  const tagsHtml = tags.length ? tags.map(t => `<span class="tag">${t}</span>`).join('') : '<span style="color:#8b949e">无</span>';
+
+  // 社交信息
+  const social = data.social_info || {};
+  const socialItems = [];
+  if (social.twitter) socialItems.push(`<a href="${social.twitter}" target="_blank" style="color:#58a6ff">Twitter</a>`);
+  if (social.website) socialItems.push(`<a href="${social.website}" target="_blank" style="color:#58a6ff">Website</a>`);
+  if (social.uri) socialItems.push(`<a href="${social.uri}" target="_blank" style="color:#58a6ff">Metadata</a>`);
+  const socialHtml = socialItems.length ? socialItems.join(' · ') : '<span style="color:#8b949e">无</span>';
+
+  const html = `
+    <div class="modal-overlay" onclick="if(event.target===this)closeSignalDetail()">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>
+            <span style="color:#58a6ff">${data.token_symbol || signal.token_symbol || '?'}</span>
+            <span style="font-size:12px;color:#8b949e;font-weight:400;margin-left:8px">${data.token_name || ''}</span>
+          </h3>
+          <button class="modal-close" onclick="closeSignalDetail()">✕</button>
+        </div>
+        <div class="modal-body">
+
+          <div class="modal-section">
+            <h4>基本信息</h4>
+            <div style="margin-bottom:10px">
+              <span class="tag chain">${data.chain || 'solana'}</span>
+              <span class="tag launch">${data.launchpad || '?'}</span>
+              ${tagsHtml}
+            </div>
+            <div class="detail-grid">
+              <div class="detail-item"><div class="label">合约地址</div><div class="value" style="font-family:monospace;font-size:11px">${data.token_address || signal.contract_address || '-'}</div></div>
+              <div class="detail-item"><div class="label">创建者</div><div class="value" style="font-family:monospace;font-size:11px">${data.creator_address || '-'}</div></div>
+              <div class="detail-item"><div class="label">创建时间</div><div class="value">${fmtTime(data.creation_timestamp)}</div></div>
+              <div class="detail-item"><div class="label">总供应量</div><div class="value">${fmt(data.total_supply)}</div></div>
+              <div class="detail-item"><div class="label">信号组</div><div class="value">${data.group_name || '-'}</div></div>
+              <div class="detail-item"><div class="label">信号次数</div><div class="value">${data.signal_count || '-'}</div></div>
+              <div class="detail-item"><div class="label">首次信号</div><div class="value">${fmtTime(data.first_time)}</div></div>
+              <div class="detail-item"><div class="label">信号时间</div><div class="value">${signal.signal_time ? new Date(signal.signal_time).toLocaleString('zh-CN') : '-'}</div></div>
+            </div>
+          </div>
+
+          <div class="modal-section">
+            <h4>价格 & 市值</h4>
+            <div class="detail-grid">
+              <div class="detail-item"><div class="label">当前价格</div><div class="value" style="font-family:monospace;font-size:14px">${fmtPrice(data.price)}</div></div>
+              <div class="detail-item"><div class="label">市值</div><div class="value">${fmtUsd(data.market_cap)}</div></div>
+              <div class="detail-item"><div class="label">FDV</div><div class="value">${fmtUsd(data.fdv)}</div></div>
+              <div class="detail-item"><div class="label">流动池</div><div class="value">${fmtUsd(data.liquidity)}</div></div>
+              <div class="detail-item"><div class="label">持有人</div><div class="value">${fmt(data.holders)}</div></div>
+              <div class="detail-item"><div class="label">Top10 持仓</div><div class="value">${fmtPct(data.top10_position)}</div></div>
+              <div class="detail-item"><div class="label">初始价格</div><div class="value" style="font-family:monospace">${fmtPrice(data.first_price)}</div></div>
+              <div class="detail-item"><div class="label">最高价</div><div class="value" style="font-family:monospace">${fmtPrice(data.max_price)}</div></div>
+              <div class="detail-item"><div class="label">最大涨幅</div><div class="value up">${data.max_price_gain != null ? data.max_price_gain.toFixed(2) + 'x' : '-'}</div></div>
+              <div class="detail-item"><div class="label">DEX</div><div class="value">${data.dex_name || '-'}</div></div>
+              <div class="detail-item"><div class="label">交易对</div><div class="value" style="font-family:monospace;font-size:11px">${data.pair || '-'}</div></div>
+            </div>
+          </div>
+
+          <div class="modal-section">
+            <h4>涨跌幅</h4>
+            <div class="detail-grid">
+              <div class="detail-item"><div class="label">5 分钟</div><div class="value">${fmtPctCol(data.percent_5m)}</div></div>
+              <div class="detail-item"><div class="label">1 小时</div><div class="value">${fmtPctCol(data.percent_1h)}</div></div>
+              <div class="detail-item"><div class="label">12 小时</div><div class="value">${fmtPctCol(data.percent_12h)}</div></div>
+              <div class="detail-item"><div class="label">24 小时</div><div class="value">${fmtPctCol(data.percent_24h)}</div></div>
+            </div>
+          </div>
+
+          <div class="modal-section">
+            <h4>成交量</h4>
+            <div class="detail-grid">
+              <div class="detail-item"><div class="label">5 分钟</div><div class="value">${fmtUsd(data.volume_5m)}</div></div>
+              <div class="detail-item"><div class="label">1 小时</div><div class="value">${fmtUsd(data.volume_1h)}</div></div>
+              <div class="detail-item"><div class="label">6 小时</div><div class="value">${fmtUsd(data.volume_6h)}</div></div>
+              <div class="detail-item"><div class="label">12 小时</div><div class="value">${fmtUsd(data.volume_12h)}</div></div>
+              <div class="detail-item"><div class="label">24 小时</div><div class="value">${fmtUsd(data.volume_24h)}</div></div>
+            </div>
+          </div>
+
+          <div class="modal-section">
+            <h4>聪明钱 (${data.wallet_count || 0})</h4>
+            <div class="wallet-list">
+              ${walletHtml}
+            </div>
+          </div>
+
+          <div class="modal-section">
+            <h4>安全检测</h4>
+            <div class="detail-grid">
+              <div class="detail-item">
+                <div class="label">Mint 权限</div>
+                <div class="value">
+                  ${isMintAbandoned === 1 ? '<span class="safe-badge safe">已放弃 ✓</span>' :
+                    isMintAbandoned === 0 ? '<span class="safe-badge unsafe">未放弃 ✗</span>' : '-'}
+                </div>
+              </div>
+              <div class="detail-item">
+                <div class="label">Debot 信任</div>
+                <div class="value">
+                  ${isDebotTrust === true ? '<span class="safe-badge safe">可信 ✓</span>' :
+                    isDebotTrust === false ? '<span class="safe-badge unsafe">不可信 ✗</span>' : '-'}
+                </div>
+              </div>
+              <div class="detail-item">
+                <div class="label">黑名单</div>
+                <div class="value">
+                  ${isBlocked === 1 ? '<span class="safe-badge unsafe">在列 ✗</span>' :
+                    isBlocked === 0 ? '<span class="safe-badge safe">未在列 ✓</span>' : '-'}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-section">
+            <h4>社交链接</h4>
+            <div style="font-size:13px">${socialHtml}</div>
+          </div>
+
+          <div class="modal-section">
+            <h4>操作</h4>
+            <a href="https://debot.ai/token/solana/${signal.contract_address}" target="_blank" class="btn btn-primary" style="text-decoration:none">在 Debot 查看 →</a>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  `;
+
+  const div = document.createElement('div');
+  div.id = 'signal-detail-modal';
+  div.innerHTML = html;
+  document.body.appendChild(div);
+
+  // ESC 关闭
+  document.addEventListener('keydown', function escHandler(e) {
+    if (e.key === 'Escape') {
+      closeSignalDetail();
+      document.removeEventListener('keydown', escHandler);
+    }
+  });
+}
+
+function closeSignalDetail() {
+  const modal = document.getElementById('signal-detail-modal');
+  if (modal) modal.remove();
 }
 
 // ============================================================
