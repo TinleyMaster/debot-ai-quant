@@ -80,6 +80,8 @@ class BacktestParams:
 
 
 # 参数网格定义
+import random
+
 PARAM_GRID = {
     # -- 卖出策略 --
     "take_profit": [0.6, 1.0, 2.0],
@@ -112,6 +114,8 @@ PARAM_GRID = {
     "bribe_fee_sol": [0.003],
     "price_deviation_pct": [0.0],
 }
+
+MAX_GRID_COMBOS = int(os.environ.get("MAX_GRID_COMBOS", "3000"))  # 网格组合上限，超限随机采样
 
 # ---- 交易成本常量 ----
 
@@ -283,15 +287,23 @@ class BacktestEngine:
     # ---- 参数网格 ----
 
     def generate_param_grid(self) -> list:
-        """生成参数网格"""
+        """生成参数网格，组合数超 MAX_GRID_COMBOS 时随机采样"""
         keys = list(PARAM_GRID.keys())
         values = list(PARAM_GRID.values())
+        full_count = 1
+        for v in values:
+            full_count *= len(v)
         combinations = list(product(*values))
+        total = len(combinations)
+        if total > MAX_GRID_COMBOS:
+            logger.warning(f"参数网格 {total} 组超过上限 {MAX_GRID_COMBOS}，随机采样")
+            combinations = random.sample(combinations, MAX_GRID_COMBOS)
+            total = MAX_GRID_COMBOS
         params_list = []
         for combo in combinations:
             p = BacktestParams(**dict(zip(keys, combo)))
             params_list.append(p)
-        logger.info(f"参数网格: {len(params_list)} 组组合")
+        logger.info(f"参数网格: {total} 组组合 (全量 {full_count})")
         return params_list
 
     # ---- 主回测 ----

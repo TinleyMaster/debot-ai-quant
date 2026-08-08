@@ -58,6 +58,8 @@ logger = logging.getLogger("main")
 
 # 优雅退出标志
 _shutdown_flag = False
+# 网格回测异步任务
+_grid_job = {"running": False, "progress": 0, "total": 0, "started_at": "", "error": None, "results": None}
 # 最新阻断原因（供健康接口读取）
 _last_block_reason = ""
 _last_block_time = ""
@@ -369,20 +371,43 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(result, ensure_ascii=False).encode())
 
         elif self.path == "/run-backtest":
-            # n8n 触发回测运算
-            logger.info("收到回测请求")
-            try:
-                result = run_backtest()
+            # 全部参数网格回测（异步执行，不阻塞 HTTP 响应）
+            logger.info("收到网格回测请求")
+            if _grid_job["running"]:
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json.dumps(result, ensure_ascii=False).encode())
+                self.wfile.write(json.dumps({
+                    "success": False,
+                    "message": "回测已在运行中",
+                    "progress": _grid_job["progress"],
+                    "total": _grid_job["total"],
+                }, ensure_ascii=False).encode())
+                return
+            try:
+                _start_grid_job()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "success": True,
+                    "started": True,
+                    "message": f"回测已启动 ({_grid_job['total']} 组参数)",
+                }, ensure_ascii=False).encode())
             except Exception as e:
-                logger.error(f"回测失败: {e}")
+                logger.error(f"启动回测失败: {e}")
                 self.send_response(500)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path == "/backtest-status":
+            # 异步回测进度查询
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(_grid_job, ensure_ascii=False).encode())
 
         elif self.path == "/sync-strategy":
             # n8n 触发策略同步
@@ -631,6 +656,39 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
+
+
+def _start_grid_job():
+    """在后台线程启动网格回测，通过 _grid_job 字典汇报进度"""
+    global _grid_job
+    _grid_job = {
+        "running": True, "progress": 0, "total": 0,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "error": None, "results": None,
+    }
+
+    def _run():
+        global _grid_job
+        try:
+            engine = __import__("backtest_engine", fromlist=["BacktestEngine"]).BacktestEngine()
+            engine.load_data()
+            param_list = engine.generate_param_grid()
+            _grid_job["total"] = len(param_list)
+            results = []
+            for i, params in enumerate(param_list):
+                result = engine.run_single(params)
+                results.append(result)
+                _grid_job["progress"] = i + 1
+            results.sort(key=lambda r: r.profit_factor, reverse=True)
+            _grid_job["results"] = [r.to_summary_dict() for r in results]
+            _grid_job["running"] = False
+            logger.info(f"网格回测完成: {len(results)} 组结果")
+        except Exception as e:
+            logger.error(f"网格回测异常: {e}", exc_info=True)
+            _grid_job["error"] = str(e)
+            _grid_job["running"] = False
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def start_health_server():

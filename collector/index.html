@@ -533,20 +533,60 @@ async function runSingle() {
 }
 
 async function runGrid() {
-  setLoading('正在全部迭代回测（参数网格搜索）...');
+  if (document.getElementById('btn-grid').disabled) return;
   document.getElementById('btn-single').disabled = true;
   document.getElementById('btn-grid').disabled = true;
-  const start = Date.now();
   try {
-    const resp = await fetch('/run-backtest', { signal: AbortSignal.timeout(600000) });
+    const resp = await fetch('/run-backtest');
     const data = await resp.json();
-    lastResult = data;
-    showGridResult(data, (Date.now()-start)/1000);
+    if (data.started) {
+      setLoading(data.message + '，正在轮询进度...');
+      pollGridStatus();
+    } else if (data.message && data.message.includes('已在运行')) {
+      setLoading('回测已在运行中 (' + data.progress + '/' + data.total + ')，正在轮询...');
+      pollGridStatus();
+    } else {
+      document.getElementById('content-rank').innerHTML = '<div class="empty">启动回测失败</div>';
+      document.getElementById('btn-single').disabled = false;
+      document.getElementById('btn-grid').disabled = false;
+    }
   } catch(e) {
     document.getElementById('content-rank').innerHTML = `<div class="empty">请求失败: ${e.message}</div>`;
+    document.getElementById('btn-single').disabled = false;
+    document.getElementById('btn-grid').disabled = false;
   }
-  document.getElementById('btn-single').disabled = false;
-  document.getElementById('btn-grid').disabled = false;
+}
+
+async function pollGridStatus() {
+  const statusEl = document.getElementById('content-rank');
+  try {
+    const resp = await fetch('/backtest-status');
+    const job = await resp.json();
+    if (job.running) {
+      const pct = job.total > 0 ? (job.progress / job.total * 100).toFixed(0) : 0;
+      statusEl.innerHTML = `<div class="loading"><span class="spinner"></span> 网格回测中... ${job.progress}/${job.total} (${pct}%)</div>`;
+      setTimeout(pollGridStatus, 2000);
+    } else if (job.error) {
+      statusEl.innerHTML = `<div class="empty">回测出错: ${job.error}</div>`;
+      document.getElementById('btn-single').disabled = false;
+      document.getElementById('btn-grid').disabled = false;
+    } else if (job.results && job.results.length > 0) {
+      lastResult = {
+        top_strategies: job.results,
+        combinations: job.total,
+        data_quality: {},
+      };
+      showGridResult(lastResult, 0);
+      document.getElementById('btn-single').disabled = false;
+      document.getElementById('btn-grid').disabled = false;
+    } else {
+      statusEl.innerHTML = '<div class="empty">回测完成，但无结果</div>';
+      document.getElementById('btn-single').disabled = false;
+      document.getElementById('btn-grid').disabled = false;
+    }
+  } catch(e) {
+    setTimeout(pollGridStatus, 3000);
+  }
 }
 
 async function loadReport() {
