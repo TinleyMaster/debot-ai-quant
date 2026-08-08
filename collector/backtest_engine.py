@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from db import get_conn, get_backtest_data, save_best_strategy
+from db import get_conn, get_backtest_data, save_best_strategy, get_active_strategy
 
 logger = logging.getLogger("backtest")
 
@@ -107,7 +107,7 @@ PARAM_GRID = {
     "runtime_end_hour": [0, 6],
 
     # -- 风险控制 (大多数策略共享默认值，不在网格中展开) --
-    "slippage_pct": [0.30],
+    "slippage_pct": [0.20, 0.25, 0.30],
     "priority_fee_sol": [0.001],
     "bribe_fee_sol": [0.003],
     "price_deviation_pct": [0.0],

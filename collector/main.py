@@ -31,7 +31,7 @@ from db import (
     get_latest_signal_time, get_unprocessed_count, get_latest_unresolved_alert,
     get_latest_signals, get_token_kline, get_all_tracked_tokens,
     upsert_token_detail, insert_token_metric, upsert_signal_agg, insert_wallet_trades,
-    run_migrations,
+    run_migrations, save_best_strategy,
 )
 from scraper import DebotScraper
 from api_client import DebotAPIClient, create_client_from_env
@@ -591,6 +591,30 @@ class HealthHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps(result, ensure_ascii=False).encode())
             except Exception as e:
                 logger.error(f"自定义回测失败: {e}")
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
+        elif self.path == "/save-strategy":
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_length)
+                data = json.loads(body)
+                logger.info(f"收到保存策略请求")
+                with get_conn() as conn:
+                    strategy_id = save_best_strategy(conn, data)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "success": True,
+                    "strategy_id": strategy_id,
+                    "message": "策略已保存"
+                }, ensure_ascii=False).encode())
+            except Exception as e:
+                logger.error(f"保存策略失败: {e}")
                 self.send_response(500)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")

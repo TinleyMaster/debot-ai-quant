@@ -344,6 +344,7 @@ tr:hover td{background:#161b22}
     <div class="btn-group">
       <button class="btn btn-primary" onclick="runSingle()" id="btn-single">当前参数回测</button>
       <button class="btn btn-warning" onclick="runGrid()" id="btn-grid">全部迭代回测</button>
+      <button class="btn" style="background:#1a7f37;color:#fff" onclick="saveStrategy()" id="btn-save">保存策略</button>
     </div>
     <div class="section-title" style="margin-top:16px">定时任务</div>
     <button class="btn" style="width:100%;background:#21262d;color:#8b949e" onclick="loadLatest()">加载最新网格回测报告</button>
@@ -395,11 +396,19 @@ tr:hover td{background:#161b22}
 <script>
 let lastResult = null, currentTab = 'rank', lastTrades = [];
 
+function throttle(fn, ms) {
+  let timer;
+  return function() {
+    if (timer) return;
+    timer = setTimeout(function() { timer = null; fn(); }, ms);
+  };
+}
+
 function updateLabel(el, labelId, suffix) {
   document.getElementById(labelId).textContent = el.tagName === 'SELECT'
     ? el.options[el.selectedIndex].text
     : el.value + suffix;
-  updateHeader();
+  updateHeaderThrottled();
 }
 
 function updateHeader() {
@@ -410,6 +419,7 @@ function updateHeader() {
   if (slp) document.getElementById('hdr-slp').textContent = slp.value + '%';
   if (pfee) document.getElementById('hdr-pfee').textContent = parseFloat(pfee.value).toFixed(3) + ' SOL';
 }
+const updateHeaderThrottled = throttle(updateHeader, 100);
 
 function updateSignalConfirm() {
   const m = document.getElementById('signal_confirm_minutes').value;
@@ -523,7 +533,7 @@ async function runSingle() {
 }
 
 async function runGrid() {
-  setLoading('正在全部迭代回测 (576组参数)...');
+  setLoading('正在全部迭代回测（参数网格搜索）...');
   document.getElementById('btn-single').disabled = true;
   document.getElementById('btn-grid').disabled = true;
   const start = Date.now();
@@ -552,6 +562,43 @@ async function loadReport() {
     }
   } catch(e) {
     document.getElementById('content-rank').innerHTML = `<div class="empty">请求失败: ${e.message}</div>`;
+  }
+}
+
+async function saveStrategy() {
+  const btn = document.getElementById('btn-save');
+  const orig = btn.textContent;
+  btn.textContent = '保存中...';
+  btn.disabled = true;
+  try {
+    const params = getParams();
+    const payload = {
+      strategy_params: params,
+      name: '策略_' + new Date().toISOString().slice(0, 10),
+      is_enable: true,
+    };
+    if (lastResult && lastResult.summary) {
+      payload.backtest_profit = lastResult.summary.total_profit_pct;
+      payload.max_drawdown = lastResult.summary.max_drawdown_pct;
+      payload.win_rate = lastResult.summary.win_rate;
+      payload.backtest_date_range = lastResult.summary.date_range;
+    }
+    const resp = await fetch('/save-strategy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (data.success) {
+      btn.textContent = '已保存';
+      setTimeout(function() { btn.textContent = orig; btn.disabled = false; }, 2000);
+    } else {
+      throw new Error(data.error || '保存失败');
+    }
+  } catch(e) {
+    btn.textContent = orig;
+    btn.disabled = false;
+    alert('保存策略失败: ' + e.message);
   }
 }
 
