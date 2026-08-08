@@ -269,15 +269,6 @@ def run_once(scraper: DebotScraper = None, api_client: DebotAPIClient = None) ->
 
     stats["duration_ms"] = int((time.time() - start_time) * 1000)
     _write_run_log(stats)
-
-    # 新信号入库后自动重建聚合表，确保计数准确
-    if stats["new"] > 0:
-        try:
-            with get_conn() as conn:
-                rebuild_signal_agg(conn)
-        except Exception as e:
-            logger.warning(f"自动重建聚合表失败: {e}")
-
     return stats
 
 
@@ -759,6 +750,14 @@ def main():
         init_db_pool()
         run_migrations()
         logger.info("数据库迁移完成")
+
+        # 启动时一次性校准 debot_signal_agg（清理历史虚高计数）
+        try:
+            with get_conn() as conn:
+                result = rebuild_signal_agg(conn)
+            logger.info(f"聚合表启动校准: 修正 {result.get('calibrated', 0)} + 刷新 {result.get('rebuilt', 0)} 条")
+        except Exception as e:
+            logger.warning(f"启动校准聚合表失败(非致命): {e}")
     except Exception as e:
         logger.error(f"数据库初始化失败: {e}")
         logger.error("请检查数据库环境变量配置 (DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)")

@@ -298,16 +298,20 @@ def insert_token_metric(conn, metric: dict) -> Optional[int]:
 def upsert_signal_agg(conn, agg: dict) -> None:
     """
     插入或更新代币信号累计统计。
+    signal_count 严格从 debot_signal 实表 COUNT(*) 取值，
+    避免 API 返回值不可信导致计数虚高。
     主键: contract_address
     """
     sql = """
         INSERT INTO debot_signal_agg
             (contract_address, signal_count, first_signal_time, first_price,
              max_price, max_price_gain, update_time)
-        VALUES (%(contract_address)s, %(signal_count)s, %(first_signal_time)s, %(first_price)s,
+        VALUES (%(contract_address)s,
+                (SELECT COUNT(*) FROM debot_signal WHERE contract_address = %(contract_address)s AND contract_address != ''),
+                %(first_signal_time)s, %(first_price)s,
                 %(max_price)s, %(max_price_gain)s, NOW())
         ON CONFLICT (contract_address) DO UPDATE SET
-            signal_count = EXCLUDED.signal_count,
+            signal_count = (SELECT COUNT(*) FROM debot_signal s WHERE s.contract_address = debot_signal_agg.contract_address AND s.contract_address != ''),
             first_signal_time = EXCLUDED.first_signal_time,
             first_price = EXCLUDED.first_price,
             max_price = EXCLUDED.max_price,
