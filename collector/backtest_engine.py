@@ -96,8 +96,8 @@ PARAM_GRID = {
     "signal_confirm_minutes": [1, 5],
 
     # -- 代币筛选 --
-    "min_token_age_minutes": [0, 10],
-    "max_token_age_hours": [0, 24],
+    "min_token_age_minutes": [0, 10],    # 单位: 分钟
+    "max_token_age_hours": [0, 24],       # 单位: 小时 (注意与 min 单位不同)
     "min_market_cap_usd": [0, 10000],
     "max_market_cap_usd": [0, 500000],
     "min_holders": [0, 100],
@@ -469,6 +469,7 @@ class BacktestEngine:
             return None
 
         # -- 持有人数过滤 (Debot: 持有人 Min/Max) --
+        # max_holders=0 / min_holders=0 表示"不限"，前端「不限」选项提交值即为 0
         holders = entry_snap.get("holders") or signal.get("holders_count") or 0
         if params.min_holders > 0 and holders < params.min_holders:
             return None
