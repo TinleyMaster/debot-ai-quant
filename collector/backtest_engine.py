@@ -55,6 +55,7 @@ class BacktestParams:
     min_holders: int = 0                # 最低持有人数 — Debot: 持有人 Min
     max_holders: int = 0                # 最高持有人数(0=不限) — Debot: 持有人 Max
     max_holder_rate: float = 0          # 最高TOP持仓比例(0=不限) — Debot: TOP持仓小于
+    launchpad_filter: str = ""          # 发射平台过滤(逗号分隔,空=不限) — Debot: 发射平台
 
     # -- 高级过滤: 时间 --
     runtime_start_hour: int = 0         # 运行开始(小时) — Debot: 运行时间段 开始
@@ -189,6 +190,7 @@ class BacktestEngine:
     def __init__(self):
         self.signals = []
         self.snapshots = {}  # {contract_address: [snapshot, ...]}
+        self.launchpad_map = {}  # {contract_address: {launchpad, dex_name}}
         self.data_quality = {}  # 数据质量诊断
 
     def load_data(self):
@@ -197,8 +199,10 @@ class BacktestEngine:
             data = get_backtest_data(conn)
         self.signals = data.get("signals", [])
         self.snapshots = data.get("snapshots", {})
+        self.launchpad_map = data.get("launchpad_map", {})
 
-        logger.info(f"加载 {len(self.signals)} 条信号, {len(self.snapshots)} 个代币的快照")
+        logger.info(f"加载 {len(self.signals)} 条信号, {len(self.snapshots)} 个代币的快照, "
+                     f"{len(self.launchpad_map)} 个发射平台映射")
 
         # 数据质量诊断（仅统计真实快照的时间点分布）
         time_points = defaultdict(set)
@@ -440,6 +444,16 @@ class BacktestEngine:
             holder_rate = 0
         if params.max_holder_rate > 0 and holder_rate > params.max_holder_rate:
             return None
+
+        # -- 发射平台过滤 (Debot: 发射平台) --
+        if params.launchpad_filter:
+            lp_info = self.launchpad_map.get(contract, {})
+            token_launchpad = (lp_info.get("launchpad") or "").lower()
+            token_dex = (lp_info.get("dex_name") or "").lower()
+            allowed = [x.strip().lower() for x in params.launchpad_filter.split(",") if x.strip()]
+            # 任一匹配即放行（launchpad 或 dex_name）
+            if allowed and not any(a in token_launchpad or a in token_dex for a in allowed):
+                return None
 
         # 获取行情快照
         snap_list = self.snapshots.get(contract, [])

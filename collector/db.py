@@ -326,31 +326,50 @@ def upsert_signal_agg(conn, agg: dict) -> None:
 def rebuild_signal_agg(conn) -> dict:
     """
     从 debot_signal 源表重建 debot_signal_agg，消除计数虚高。
+    使用子查询隔离 COUNT(*)，避免 JOIN 导致行膨胀。
     返回 {rebuilt: int} 重建条数。
     """
     try:
         with conn.cursor() as cur:
+            # 先校准已有行的 signal_count（清理旧脏数据）
+            cur.execute("""
+                UPDATE debot_signal_agg a
+                SET signal_count = (
+                    SELECT COUNT(*) FROM debot_signal s
+                    WHERE s.contract_address = a.contract_address AND s.contract_address != ''
+                )
+                WHERE a.contract_address IN (SELECT DISTINCT contract_address FROM debot_signal)
+            """)
+            calibrated = cur.rowcount
+            conn.commit()
+            logger.info(f"debot_signal_agg 存量校准: {calibrated} 行")
+
+            # 用子查询隔离计数，重建全量数据（含新增合约）
             cur.execute("""
                 INSERT INTO debot_signal_agg
                     (contract_address, signal_count, first_signal_time, first_price,
                      max_price, max_price_gain, update_time)
                 SELECT
-                    s.contract_address,
-                    COUNT(*) AS signal_count,
-                    MIN(s.signal_time) AS first_signal_time,
-                    MIN(s.price_usd) FILTER (WHERE s.signal_time = first_signal.first_time) AS first_price,
-                    MAX(m.max_price) AS max_price,
-                    MAX(m.max_price_gain) AS max_price_gain,
+                    sc.contract_address,
+                    sc.cnt AS signal_count,
+                    sc.first_time AS first_signal_time,
+                    (SELECT s2.price_usd FROM debot_signal s2
+                     WHERE s2.contract_address = sc.contract_address
+                       AND s2.signal_time = sc.first_time
+                     LIMIT 1) AS first_price,
+                    (SELECT MAX(m.max_price) FROM debot_token_metric m
+                     WHERE m.contract_address = sc.contract_address) AS max_price,
+                    (SELECT MAX(m.max_price_gain) FROM debot_token_metric m
+                     WHERE m.contract_address = sc.contract_address) AS max_price_gain,
                     NOW()
-                FROM debot_signal s
-                LEFT JOIN LATERAL (
-                    SELECT MIN(s2.signal_time) AS first_time
-                    FROM debot_signal s2
-                    WHERE s2.contract_address = s.contract_address AND s2.contract_address != ''
-                ) first_signal ON TRUE
-                LEFT JOIN debot_token_metric m ON m.contract_address = s.contract_address
-                WHERE s.contract_address != ''
-                GROUP BY s.contract_address
+                FROM (
+                    SELECT contract_address,
+                           COUNT(*) AS cnt,
+                           MIN(signal_time) AS first_time
+                    FROM debot_signal
+                    WHERE contract_address != ''
+                    GROUP BY contract_address
+                ) sc
                 ON CONFLICT (contract_address) DO UPDATE SET
                     signal_count = EXCLUDED.signal_count,
                     first_signal_time = EXCLUDED.first_signal_time,
@@ -361,12 +380,12 @@ def rebuild_signal_agg(conn) -> dict:
             """)
             conn.commit()
             rebuilt = cur.rowcount
-            logger.info(f"debot_signal_agg 重建完成: {rebuilt} 条记录")
-            return {"rebuilt": rebuilt}
+            logger.info(f"debot_signal_agg 重建完成: 校准 {calibrated} + 插入/更新 {rebuilt} 条")
+            return {"rebuilt": rebuilt, "calibrated": calibrated}
     except Exception as e:
         conn.rollback()
         logger.error(f"重建 signal_agg 失败: {e}")
-        return {"rebuilt": 0, "error": str(e)}
+        return {"rebuilt": 0, "calibrated": 0, "error": str(e)}
 
 
 def insert_wallet_trades(conn, signal_id: int, contract_address: str, wallets: list) -> None:
@@ -609,10 +628,26 @@ def get_market_snapshot_count(conn) -> int:
 
 def get_backtest_data(conn) -> dict:
     """
-    加载回测所需的全量数据：信号列表 + 行情快照。
-    返回 {"signals": [...], "snapshots": {addr: [...]}}
+    加载回测所需的全量数据：信号列表 + 行情快照 + 发射平台映射。
+    返回 {"signals": [...], "snapshots": {addr: [...]}, "launchpad_map": {addr: str}}
     """
-    result = {"signals": [], "snapshots": {}}
+    result = {"signals": [], "snapshots": {}, "launchpad_map": {}}
+
+    # 加载发射平台映射（debot_token_detail）
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT contract_address, launchpad, dex_name
+                FROM debot_token_detail
+                WHERE launchpad IS NOT NULL OR dex_name IS NOT NULL
+            """)
+            for row in cur.fetchall():
+                result["launchpad_map"][row[0]] = {
+                    "launchpad": row[1] or "",
+                    "dex_name": row[2] or "",
+                }
+    except Exception as e:
+        logger.warning(f"加载发射平台映射失败: {e}")
 
     # 加载信号（限制 1000 条）
     try:

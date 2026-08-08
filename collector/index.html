@@ -24,6 +24,10 @@ body.left-collapsed .sidebar-toggle{left:8px;transform:rotate(180deg)}
 .form-group{margin-bottom:14px}
 .form-group label{display:flex;justify-content:space-between;font-size:12px;color:#8b949e;margin-bottom:4px}
 .form-group label .val{color:#c9d1d9;font-weight:600}
+.chip-check{display:inline-flex;align-items:center;gap:2px;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer;user-select:none;transition:border-color .15s}
+.chip-check:hover{border-color:#58a6ff}
+.chip-check input[type=checkbox]{accent-color:#238636;margin:0}
+.chip-check:has(input:checked){border-color:#238636;background:#1a2e22}
 .form-group select,.form-group input[type=range]{width:100%}
 input[type=range]{-webkit-appearance:none;height:6px;background:#21262d;border-radius:3px;outline:none}
 input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;background:#58a6ff;border-radius:50%;cursor:pointer}
@@ -300,6 +304,16 @@ tr:hover td{background:#161b22}
       </select>
     </div>
     <div class="form-group">
+      <label>发射平台 <span class="val" id="v-launchpad">不限</span></label>
+      <div style="display:flex;flex-wrap:wrap;gap:4px">
+        <label class="chip-check"><input type="checkbox" value="pump.fun" onchange="updateLaunchpadFilter()"><span>Pump.fun</span></label>
+        <label class="chip-check"><input type="checkbox" value="moonshot" onchange="updateLaunchpadFilter()"><span>Moonshot</span></label>
+        <label class="chip-check"><input type="checkbox" value="raydium" onchange="updateLaunchpadFilter()"><span>Raydium</span></label>
+        <label class="chip-check"><input type="checkbox" value="orca" onchange="updateLaunchpadFilter()"><span>Orca</span></label>
+      </div>
+      <input type="text" id="launchpad_manual" placeholder="其他平台(逗号分隔)" style="width:100%;margin-top:4px;font-size:11px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:3px 6px" oninput="updateLaunchpadFilter()">
+    </div>
+    <div class="form-group">
       <label>运行时间段 <span class="val" id="v-runtime">全天</span></label>
       <div style="display:flex;gap:6px;align-items:center">
         <select id="runtime_start_hour" style="flex:1" onchange="updateRuntimeLabel()">
@@ -497,6 +511,13 @@ function updateRuntimeLabel() {
   document.getElementById('v-runtime').textContent = (s.value==='0' && e.value==='0') ? '全天' : st + ' ~ ' + et;
 }
 
+function updateLaunchpadFilter() {
+  const checked = Array.from(document.querySelectorAll('.chip-check input:checked')).map(function(c){return c.value;});
+  const manual = document.getElementById('launchpad_manual').value.trim();
+  const all = manual ? checked.concat(manual.split(',').map(function(s){return s.trim()}).filter(Boolean)) : checked;
+  document.getElementById('v-launchpad').textContent = all.length ? all.join(',') : '不限';
+}
+
 function getParams() {
   return {
     buy_amount_sol: parseFloat(document.getElementById('buy_amount_sol').value),
@@ -514,6 +535,12 @@ function getParams() {
     min_holders: parseInt(document.getElementById('min_holders').value),
     max_holders: parseInt(document.getElementById('max_holders').value),
     max_holder_rate: parseFloat(document.getElementById('max_holder_rate').value),
+    launchpad_filter: (function(){
+      const checked = Array.from(document.querySelectorAll('.chip-check input:checked')).map(function(c){return c.value;});
+      const manual = document.getElementById('launchpad_manual').value.trim();
+      const all = manual ? checked.concat(manual.split(',').map(function(s){return s.trim()}).filter(Boolean)) : checked;
+      return all.join(',');
+    })(),
     runtime_start_hour: parseInt(document.getElementById('runtime_start_hour').value),
     runtime_end_hour: parseInt(document.getElementById('runtime_end_hour').value),
     slippage_pct: parseFloat(document.getElementById('slippage_pct').value) / 100,
@@ -755,6 +782,22 @@ function applyStrategy(strategy) {
   if (p.min_holders != null) setSelectVal('min_holders', p.min_holders);
   if (p.max_holders != null) setSelectVal('max_holders', p.max_holders);
   if (p.max_holder_rate != null) setSelectVal('max_holder_rate', p.max_holder_rate);
+  if (p.launchpad_filter) {
+    // 清除现有选择
+    document.querySelectorAll('.chip-check input').forEach(function(inp){inp.checked=false;});
+    document.getElementById('launchpad_manual').value = '';
+    const vals = p.launchpad_filter.split(',').map(function(s){return s.trim()});
+    vals.forEach(function(v){
+      const cb = document.querySelector('.chip-check input[value="'+v+'"]');
+      if (cb) cb.checked = true;
+    });
+    // 未匹配的放入手动输入
+    const unmatched = vals.filter(function(v){
+      return !document.querySelector('.chip-check input[value="'+v+'"]');
+    });
+    if (unmatched.length) document.getElementById('launchpad_manual').value = unmatched.join(',');
+    updateLaunchpadFilter();
+  }
   if (p.runtime_start_hour != null) setSelectVal('runtime_start_hour', p.runtime_start_hour);
   if (p.runtime_end_hour != null) setSelectVal('runtime_end_hour', p.runtime_end_hour);
   // 风险控制
