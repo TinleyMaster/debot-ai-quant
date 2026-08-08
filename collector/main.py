@@ -14,6 +14,11 @@ import logging
 import threading
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """多线程 HTTP 服务器，避免长时间回测阻塞其他请求"""
+    daemon_threads = True
 
 from dotenv import load_dotenv
 
@@ -606,7 +611,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def start_health_server():
     """在后台线程启动健康检测 HTTP 服务"""
-    server = HTTPServer(("0.0.0.0", 8080), HealthHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", 8080), HealthHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     logger.info("健康检测服务已启动: http://0.0.0.0:8080/health")

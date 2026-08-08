@@ -135,7 +135,7 @@ tr:hover td{background:#161b22}
 <div class="header">
   <h1>Debot AI Quant - 回测操作台</h1>
   <div class="info">
-    <span>买入: 0.1 SOL | 滑点: 20% | DEX费: 0.25% | 优先费: 0.001 SOL</span>
+    <span>买入: <b id="hdr-buy">1.0 SOL</b> | 滑点: <b id="hdr-slp">30%</b> | DEX费: 0.25% | 优先费: <b id="hdr-pfee">0.001 SOL</b></span>
   </div>
 </div>
 <button class="sidebar-toggle" id="sidebarToggle" title="折叠/展开侧栏" onclick="toggleSidebar()">◀</button>
@@ -166,7 +166,7 @@ tr:hover td{background:#161b22}
     <!-- 卖出策略 -->
     <div class="section-title">卖出策略</div>
     <div class="form-group">
-      <label>止盈倍数 <span class="val" id="v-tp">1.0x</span></label>
+      <label>止盈倍数 <span class="val" id="v-tp">100%</span></label>
       <input type="range" id="take_profit" min="60" max="200" value="100" step="5" oninput="var v2=parseInt(this.value);document.getElementById('v-tp').textContent=v2+'%';document.getElementById('v-tp-x').textContent=(v2/100).toFixed(1)+'x'">
       <small id="v-tp-x" style="color:#58a6ff;font-size:10px">1.0x</small>
     </div>
@@ -193,7 +193,7 @@ tr:hover td{background:#161b22}
       <input type="checkbox" id="only_first_signal" style="width:18px;height:18px;accent-color:#58a6ff">
     </div>
     <div class="form-group">
-      <label>信号确认 <span class="val" id="v-sc">1个/1分钟内</span></label>
+      <label>信号确认 <span class="val" id="v-sc">3个/1分钟内</span></label>
       <div style="display:flex;gap:6px;align-items:center">
         <select id="signal_confirm_minutes" style="width:70px" onchange="updateSignalConfirm()">
           <option value="1" selected>1分钟</option>
@@ -315,7 +315,7 @@ tr:hover td{background:#161b22}
     </div>
     <div class="form-group">
       <label>贿赂费 <span class="val" id="v-bribe">0.003 SOL</span></label>
-      <select id="bribe_fee_sol" onchange="document.getElementById('v-bribe').textContent=parseFloat(this.value).toFixed(3)+' SOL'">
+      <select id="bribe_fee_sol" onchange="var v5=parseFloat(this.value);document.getElementById('v-bribe').textContent=v5>0?(v5.toFixed(3)+' SOL'):'无'">
         <option value="0">无</option>
         <option value="0.001">0.001 SOL</option>
         <option value="0.003" selected>0.003 SOL</option>
@@ -325,7 +325,7 @@ tr:hover td{background:#161b22}
     </div>
     <div class="form-group">
       <label>价格偏差 <span class="val" id="v-pdev">0%</span></label>
-      <select id="price_deviation_pct" onchange="document.getElementById('v-pdev').textContent=parseFloat(this.value).toFixed(0)+'%'">
+      <select id="price_deviation_pct" onchange="var v4=parseFloat(this.value);document.getElementById('v-pdev').textContent=(v4*100).toFixed(0)+'%'">
         <option value="0" selected>0%</option>
         <option value="0.01">1%</option>
         <option value="0.03">3%</option>
@@ -359,15 +359,15 @@ tr:hover td{background:#161b22}
       <div class="tab" onclick="switchTab('signals')" id="tab-signals">最新信号 <span class="auto-refresh" id="signal-indicator"></span></div>
       <div class="tab" onclick="switchTab('kline')" id="tab-kline">K线行情</div>
     </div>
+    <div class="stats-row" id="stats-row">
+      <div class="stat-card"><div class="label">已执行</div><div class="value" style="color:#8b949e">-</div><div class="sub">等待回测</div></div>
+      <div class="stat-card"><div class="label">胜率</div><div class="value" style="color:#8b949e">-</div><div class="sub">-</div></div>
+      <div class="stat-card"><div class="label">总盈亏</div><div class="value" style="color:#8b949e">-</div><div class="sub">-</div></div>
+      <div class="stat-card"><div class="label">盈亏比</div><div class="value" style="color:#8b949e">-</div><div class="sub">-</div></div>
+      <div class="stat-card"><div class="label">最大回撤</div><div class="value" style="color:#8b949e">-</div><div class="sub">-</div></div>
+      <div class="stat-card"><div class="label">耗时</div><div class="value" style="color:#8b949e">-</div><div class="sub">-</div></div>
+    </div>
     <div class="tab-content" id="content-rank">
-      <div class="stats-row" id="stats-row">
-        <div class="stat-card"><div class="label">已执行</div><div class="value" style="color:#8b949e">-</div><div class="sub">等待回测</div></div>
-        <div class="stat-card"><div class="label">胜率</div><div class="value" style="color:#8b949e">-</div><div class="sub">-</div></div>
-        <div class="stat-card"><div class="label">总盈亏</div><div class="value" style="color:#8b949e">-</div><div class="sub">-</div></div>
-        <div class="stat-card"><div class="label">盈亏比</div><div class="value" style="color:#8b949e">-</div><div class="sub">-</div></div>
-        <div class="stat-card"><div class="label">最大回撤</div><div class="value" style="color:#8b949e">-</div><div class="sub">-</div></div>
-        <div class="stat-card"><div class="label">耗时</div><div class="value" style="color:#8b949e">-</div><div class="sub">-</div></div>
-      </div>
       <div class="empty">点击「当前参数回测」或「全部迭代回测」开始</div>
     </div>
     <div class="tab-content" id="content-detail" style="display:none">
@@ -399,6 +399,16 @@ function updateLabel(el, labelId, suffix) {
   document.getElementById(labelId).textContent = el.tagName === 'SELECT'
     ? el.options[el.selectedIndex].text
     : el.value + suffix;
+  updateHeader();
+}
+
+function updateHeader() {
+  const buy = document.getElementById('buy_amount_sol');
+  const slp = document.getElementById('slippage_pct');
+  const pfee = document.getElementById('priority_fee_sol');
+  if (buy) document.getElementById('hdr-buy').textContent = parseFloat(buy.value).toFixed(2) + ' SOL';
+  if (slp) document.getElementById('hdr-slp').textContent = slp.value + '%';
+  if (pfee) document.getElementById('hdr-pfee').textContent = parseFloat(pfee.value).toFixed(3) + ' SOL';
 }
 
 function updateSignalConfirm() {
@@ -457,7 +467,7 @@ function getParams() {
     slippage_pct: parseFloat(document.getElementById('slippage_pct').value) / 100,
     priority_fee_sol: parseFloat(document.getElementById('priority_fee_sol').value),
     bribe_fee_sol: parseFloat(document.getElementById('bribe_fee_sol').value),
-    price_deviation_pct: parseFloat(document.getElementById('price_deviation_pct').value) / 100,
+    price_deviation_pct: parseFloat(document.getElementById('price_deviation_pct').value),
   };
 }
 
@@ -481,7 +491,7 @@ document.getElementById('presets').addEventListener('click', e => {
     document.getElementById('signal_confirm_count').value = p.signal_confirm_count;
     ['take_profit','stop_loss','max_hold_hours','max_buys_per_token','max_token_age_hours','signal_confirm_count'].forEach(id => {
       const el = document.getElementById(id);
-      if (el) el.dispatchEvent(new Event(id === 'take_profit' ? 'input' : 'change'));
+      if (el) el.dispatchEvent(new Event(id === 'take_profit' || id === 'stop_loss' ? 'input' : 'change'));
     });
     updateAgeLabel(); updateSignalConfirm();
   }
@@ -513,7 +523,7 @@ async function runSingle() {
 }
 
 async function runGrid() {
-  setLoading('正在全部迭代回测 (864组参数)...');
+  setLoading('正在全部迭代回测 (576组参数)...');
   document.getElementById('btn-single').disabled = true;
   document.getElementById('btn-grid').disabled = true;
   const start = Date.now();

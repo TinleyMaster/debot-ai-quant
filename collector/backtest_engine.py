@@ -92,7 +92,6 @@ PARAM_GRID = {
     # -- 信号确认 --
     "signal_confirm_count": [1, 3],
     "signal_confirm_minutes": [1, 5],
-    "only_first_signal": [False, True],
 
     # -- 代币筛选 --
     "min_token_age_minutes": [0, 10],
@@ -319,12 +318,13 @@ class BacktestEngine:
     def run_single(self, params: BacktestParams) -> StrategyResult:
         """对单组参数执行完整回测"""
         result = StrategyResult(params=params)
-        portfolio = INITIAL_PORTFOLIO_USD
-        peak_portfolio = INITIAL_PORTFOLIO_USD
-        max_drawdown = 0.0
+        cumulative_profit = 0.0
+        peak_cumulative = 0.0
+        max_drawdown_usd = 0.0
         consecutive_losses = 0
         gross_profit = 0.0
         gross_loss = 0.0
+        buy_amount_usd = params.buy_amount_sol * params.sol_price_usd
 
         # 构建信号确认索引
         confirm_index = self._build_signal_confirm_index(params)
@@ -374,22 +374,20 @@ class BacktestEngine:
                     result.max_consecutive_losses, consecutive_losses
                 )
 
-            # 更新组合净值 (USD)
+            # 累计盈亏（基于累积利润曲线计算）
             result.total_profit_usd += trade.profit_usd
-            portfolio += trade.profit_usd
-            # 组合不能为负（现实中最多亏光）
-            portfolio = max(portfolio, 0.01)
-
-            if portfolio > peak_portfolio:
-                peak_portfolio = portfolio
-            drawdown = (peak_portfolio - portfolio) / (peak_portfolio + 1e-10)
-            max_drawdown = max(max_drawdown, drawdown)
+            cumulative_profit += trade.profit_usd
+            if cumulative_profit > peak_cumulative:
+                peak_cumulative = cumulative_profit
+            drawdown = peak_cumulative - cumulative_profit
+            max_drawdown_usd = max(max_drawdown_usd, drawdown)
 
         # 汇总统计
         if result.total_trades > 0:
             result.win_rate = result.winning_trades / result.total_trades
-            result.max_drawdown_pct = max_drawdown
-            result.total_profit_pct = (portfolio - INITIAL_PORTFOLIO_USD) / INITIAL_PORTFOLIO_USD
+            total_invested = result.total_trades * buy_amount_usd
+            result.total_profit_pct = cumulative_profit / total_invested if total_invested > 0 else 0.0
+            result.max_drawdown_pct = max_drawdown_usd / total_invested if total_invested > 0 else 0.0
 
         if result.winning_trades > 0:
             result.avg_profit_pct = gross_profit / result.winning_trades
@@ -454,7 +452,7 @@ class BacktestEngine:
             return None
 
         # -- 持有人数过滤 (Debot: 持有人 Min/Max) --
-        holders = entry_snap.get("holders") or 0
+        holders = entry_snap.get("holders") or signal.get("holders_count") or 0
         if params.min_holders > 0 and holders < params.min_holders:
             return None
         if params.max_holders > 0 and holders > params.max_holders:
