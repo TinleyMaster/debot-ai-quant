@@ -1150,9 +1150,18 @@ function renderSignalTable(signals) {
     // 信号组信息
     const signalInfo = formatSignalContent(s.signal_content || '');
 
+    // 金/银/铜等级徽章
+    const levelBadge = (() => {
+      const lv = s.token_level || '';
+      const colors = { gold: '#d29922', silver: '#8b949e', bronze: '#d97706' };
+      const labels = { gold: '金', silver: '银', bronze: '铜' };
+      if (!lv || !colors[lv]) return '';
+      return `<span style="display:inline-block;background:${colors[lv]};color:#fff;font-size:9px;font-weight:700;padding:0 4px;border-radius:3px;margin-right:2px;line-height:16px">${labels[lv]}</span>`;
+    })();
+
     html += `<tr>
       <td class="signal-time-cell"><div class="time-main">${t.main}</div><div class="time-rel">${t.rel}</div></td>
-      <td><b style="color:#58a6ff;cursor:pointer;text-decoration:underline" onclick="event.stopPropagation();viewSignalKline('${s.contract_address}','${s.token_symbol||'?'}','${s.signal_time||''}')">${s.token_symbol || '?'}</b></td>
+      <td>${levelBadge}<b style="color:#58a6ff;cursor:pointer;text-decoration:underline" onclick="event.stopPropagation();viewSignalKline('${s.contract_address}','${s.token_symbol||'?'}','${s.signal_time||''}')">${s.token_symbol || '?'}</b></td>
       <td><a class="contract-link" href="https://debot.ai/token/solana/${s.contract_address}" target="_blank">${s.contract_address.slice(0,6)}...${s.contract_address.slice(-4)}</a></td>
       <td class="token-price">${fmtPrice(s.price_usd)}</td>
       <td>${fmtCompact(s.market_cap || s.pool_value, 0)}</td>
@@ -1261,6 +1270,12 @@ function showSignalDetail(signal) {
               <div class="detail-item"><div class="label">总供应量</div><div class="value">${fmt(data.total_supply)}</div></div>
               <div class="detail-item"><div class="label">信号组</div><div class="value">${data.group_name || '-'}</div></div>
               <div class="detail-item"><div class="label">信号次数</div><div class="value">${data.signal_count || '-'}</div></div>
+              <div class="detail-item"><div class="label">AI 等级</div><div class="value">${(() => {
+                const lv = signal.token_level || '';
+                const colors = { gold: '#d29922', silver: '#8b949e', bronze: '#d97706' };
+                const labels = { gold: 'Gold·金', silver: 'Silver·银', bronze: 'Bronze·铜' };
+                return lv && colors[lv] ? `<span style="color:${colors[lv]};font-weight:700">${labels[lv]}</span>` : '-';
+              })()}</div></div>
               <div class="detail-item"><div class="label">首次信号</div><div class="value">${fmtTime(data.first_time)}</div></div>
               <div class="detail-item"><div class="label">信号时间</div><div class="value">${signal.signal_time ? new Date(signal.signal_time).toLocaleString('zh-CN') : '-'}</div></div>
             </div>

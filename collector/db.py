@@ -85,6 +85,7 @@ def run_migrations():
         ("multiplier", "VARCHAR(16)"),
         ("channel_id", "INT"),
         ("group_name", "VARCHAR(128)"),
+        ("token_level", "VARCHAR(16)"),    # 金/银/铜等级 (gold/silver/bronze)
     ]
     try:
         with get_conn() as conn:
@@ -203,13 +204,13 @@ def insert_signal(conn, signal_data: dict) -> Optional[int]:
              market_cap, market_cap_prev, holders_count,
              price_usd, price_usd_prev, token_age,
              smart_wallets, avg_buy_amount, multiplier,
-             channel_id, group_name)
+             channel_id, group_name, token_level)
         VALUES (%(signal_time)s, %(contract_address)s, %(token_symbol)s,
                 %(pool_value)s, %(holder_rate)s, %(signal_content)s, %(source_url)s,
                 %(market_cap)s, %(market_cap_prev)s, %(holders_count)s,
                 %(price_usd)s, %(price_usd_prev)s, %(token_age)s,
                 %(smart_wallets)s, %(avg_buy_amount)s, %(multiplier)s,
-                %(channel_id)s, %(group_name)s)
+                %(channel_id)s, %(group_name)s, %(token_level)s)
         ON CONFLICT (contract_address, signal_time) DO NOTHING
         RETURNING id
     """
@@ -785,6 +786,7 @@ def get_latest_signals(conn, limit: int = 50) -> list:
                        s.price_usd, s.price_usd_prev, s.token_age,
                        s.smart_wallets, s.avg_buy_amount, s.multiplier,
                        s.channel_id, s.group_name,
+                       s.token_level,
                        -- token_detail 扩展字段
                        d.token_name, d.token_logo, d.creator_address,
                        d.total_supply, d.launchpad, d.creation_time,

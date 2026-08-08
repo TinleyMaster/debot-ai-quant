@@ -274,13 +274,14 @@ class DebotAPIClient:
             metrics = metrics_map.get(contract_address, {})
             top10_position = metrics.get("top10_position")
 
-            # 从 signal_stats 取最大涨幅（作为倍数参考）
+            # 从 signal_stats 取最大涨幅等统计
             sig_stat = signal_stats_map.get(contract_address, {})
             max_price_gain = sig_stat.get("max_price_gain")
             first_price = sig_stat.get("first_price")
             max_price = sig_stat.get("max_price")
             signal_count = sig_stat.get("signal_count")
             first_time = sig_stat.get("first_time")
+            token_level = sig_stat.get("token_level", "")  # gold/silver/bronze
 
             # 安全信息 / 社交信息 / 标签
             # safe_info 的键可能是地址，也可能嵌套 chain，做兼容
@@ -435,6 +436,7 @@ class DebotAPIClient:
                 "pair_address": metrics.get("pair"),
                 "dex_name": metrics.get("dex_name"),
                 "signal_count": signal_count,
+                "token_level": token_level,        # gold / silver / bronze
                 "first_price": first_price,
                 "first_time": first_time,  # unix 时间戳，秒
                 "is_mint_abandoned": is_mint_abandoned,
