@@ -751,11 +751,11 @@ def main():
         run_migrations()
         logger.info("数据库迁移完成")
 
-        # 启动时一次性校准 debot_signal_agg（清理历史虚高计数）
+        # 启动时一次性校准 debot_signal_agg（补齐缺失行 + 修正计数）
         try:
             with get_conn() as conn:
                 result = rebuild_signal_agg(conn)
-            logger.info(f"聚合表启动校准: 修正 {result.get('calibrated', 0)} + 刷新 {result.get('rebuilt', 0)} 条")
+            logger.info(f"聚合表启动校准: {result.get('rebuilt', 0)} 条")
         except Exception as e:
             logger.warning(f"启动校准聚合表失败(非致命): {e}")
     except Exception as e:

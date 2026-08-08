@@ -329,67 +329,39 @@ def upsert_signal_agg(conn, agg: dict) -> None:
 
 def rebuild_signal_agg(conn) -> dict:
     """
-    从 debot_signal 源表重建 debot_signal_agg，消除计数虚高。
-    使用子查询隔离 COUNT(*)，避免 JOIN 导致行膨胀。
-    返回 {rebuilt: int} 重建条数。
+    从 debot_signal 源表全量 UPSERT 聚合表。
+    一行 SQL 同时处理：缺失行 INSERT + 已有行 UPDATE signal_count。
+    不再依赖标量子查询跨表 JOIN，避免行膨胀或静默失败。
+    返回 {"rebuilt": int} 影响行数。
     """
     try:
         with conn.cursor() as cur:
-            # 先校准已有行的 signal_count（清理旧脏数据）
-            cur.execute("""
-                UPDATE debot_signal_agg a
-                SET signal_count = (
-                    SELECT COUNT(*) FROM debot_signal s
-                    WHERE s.contract_address = a.contract_address AND s.contract_address != ''
-                )
-                WHERE a.contract_address IN (SELECT DISTINCT contract_address FROM debot_signal)
-            """)
-            calibrated = cur.rowcount
-            conn.commit()
-            logger.info(f"debot_signal_agg 存量校准: {calibrated} 行")
-
-            # 用子查询隔离计数，重建全量数据（含新增合约）
             cur.execute("""
                 INSERT INTO debot_signal_agg
-                    (contract_address, signal_count, first_signal_time, first_price,
-                     max_price, max_price_gain, update_time)
+                    (contract_address, signal_count, first_signal_time,
+                     update_time)
                 SELECT
-                    sc.contract_address,
-                    sc.cnt AS signal_count,
-                    sc.first_time AS first_signal_time,
-                    (SELECT s2.price_usd FROM debot_signal s2
-                     WHERE s2.contract_address = sc.contract_address
-                       AND s2.signal_time = sc.first_time
-                     LIMIT 1) AS first_price,
-                    (SELECT MAX(m.max_price) FROM debot_token_metric m
-                     WHERE m.contract_address = sc.contract_address) AS max_price,
-                    (SELECT MAX(m.max_price_gain) FROM debot_token_metric m
-                     WHERE m.contract_address = sc.contract_address) AS max_price_gain,
+                    contract_address,
+                    COUNT(*)          AS signal_count,
+                    MIN(signal_time)  AS first_signal_time,
                     NOW()
-                FROM (
-                    SELECT contract_address,
-                           COUNT(*) AS cnt,
-                           MIN(signal_time) AS first_time
-                    FROM debot_signal
-                    WHERE contract_address != ''
-                    GROUP BY contract_address
-                ) sc
+                FROM debot_signal
+                WHERE contract_address != ''
+                GROUP BY contract_address
                 ON CONFLICT (contract_address) DO UPDATE SET
-                    signal_count = EXCLUDED.signal_count,
-                    first_signal_time = EXCLUDED.first_signal_time,
-                    first_price = EXCLUDED.first_price,
-                    max_price = EXCLUDED.max_price,
-                    max_price_gain = EXCLUDED.max_price_gain,
-                    update_time = NOW()
+                    signal_count      = EXCLUDED.signal_count,
+                    first_signal_time = COALESCE(EXCLUDED.first_signal_time,
+                                                 debot_signal_agg.first_signal_time),
+                    update_time       = NOW()
             """)
             conn.commit()
-            rebuilt = cur.rowcount
-            logger.info(f"debot_signal_agg 重建完成: 校准 {calibrated} + 插入/更新 {rebuilt} 条")
-            return {"rebuilt": rebuilt, "calibrated": calibrated}
+            rowcount = cur.rowcount
+            logger.info(f"debot_signal_agg 全量 UPSERT: {rowcount} 条")
+            return {"rebuilt": rowcount}
     except Exception as e:
         conn.rollback()
         logger.error(f"重建 signal_agg 失败: {e}")
-        return {"rebuilt": 0, "calibrated": 0, "error": str(e)}
+        return {"rebuilt": 0, "error": str(e)}
 
 
 def insert_wallet_trades(conn, signal_id: int, contract_address: str, wallets: list) -> None:
