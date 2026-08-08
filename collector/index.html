@@ -73,9 +73,20 @@ tr:hover td{background:#161b22}
 .kline-legend span{display:inline-flex;align-items:center;gap:3px}
 .kline-legend .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
 .loading{display:flex;align-items:center;justify-content:center;height:200px;color:#8b949e;font-size:14px}
+.loading-wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;height:200px}
+.progress-bar{width:260px;height:6px;background:#21262d;border-radius:3px;overflow:hidden}
+.progress-bar-fill{height:100%;background:linear-gradient(90deg,#58a6ff,#3fb950);border-radius:3px;transition:width .3s}
+.progress-text{font-size:12px;color:#8b949e}
 .spinner{width:24px;height:24px;border:2px solid #30363d;border-top-color:#58a6ff;border-radius:50%;animation:spin .8s linear infinite;margin-right:8px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .empty{display:flex;align-items:center;justify-content:center;height:200px;color:#8b949e;font-size:13px}
+.accordion{margin-bottom:4px}
+.accordion summary{font-size:11px;font-weight:600;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;padding:6px 0;cursor:pointer;list-style:none}
+.accordion summary::-webkit-details-marker{display:none}
+.accordion summary::before{content:'▸';display:inline-block;width:14px;transition:transform .15s;color:#58a6ff}
+.accordion[open] summary::before{transform:rotate(90deg)}
+.accordion .section-content{padding-left:4px}
+.breakeven-hint{font-size:10px;color:#d29922;margin-top:2px}
 #duration{font-size:11px;color:#8b949e;margin-left:8px}
 .signal-time{font-size:11px;color:#8b949e}
 .contract-link{color:#58a6ff;text-decoration:none;font-family:monospace;font-size:11px}
@@ -144,15 +155,19 @@ tr:hover td{background:#161b22}
   <!-- 左侧参数面板 -->
   <div class="panel panel-left">
     <div class="panel-inner">
-    <!-- 基础设置 -->
-    <div class="section-title">基础设置</div>
+    <details class="accordion" open>
+    <summary>基础设置</summary>
+    <div class="section-content">
     <div class="form-group">
       <label>买入金额 <span class="val" id="v-buyAmt">1.0 SOL</span></label>
       <input type="range" id="buy_amount_sol" min="0.05" max="5" value="1.0" step="0.05" oninput="var v1=parseFloat(this.value);document.getElementById('v-buyAmt').textContent=v1.toFixed(2)+' SOL'">
     </div>
+    </div>
+    </details>
 
-    <!-- 买入策略 -->
-    <div class="section-title">买入策略</div>
+    <details class="accordion" open>
+    <summary>买入策略</summary>
+    <div class="section-content">
     <div class="form-group">
       <label>单币买入次数 <span class="val" id="v-buys">1 次</span></label>
       <select id="max_buys_per_token" onchange="document.getElementById('v-buys').textContent=this.value+' 次'">
@@ -162,9 +177,12 @@ tr:hover td{background:#161b22}
         <option value="5">5 次</option>
       </select>
     </div>
+    </div>
+    </details>
 
-    <!-- 卖出策略 -->
-    <div class="section-title">卖出策略</div>
+    <details class="accordion" open>
+    <summary>卖出策略</summary>
+    <div class="section-content">
     <div class="form-group">
       <label>止盈倍数 <span class="val" id="v-tp">100%</span></label>
       <input type="range" id="take_profit" min="60" max="200" value="100" step="5" oninput="var v2=parseInt(this.value);document.getElementById('v-tp').textContent=v2+'%';document.getElementById('v-tp-x').textContent=(v2/100).toFixed(1)+'x'">
@@ -185,9 +203,12 @@ tr:hover td{background:#161b22}
         <option value="48">48 小时</option>
       </select>
     </div>
+    </div>
+    </details>
 
-    <!-- 高级过滤 -->
-    <div class="section-title">高级过滤</div>
+    <details class="accordion" open>
+    <summary>高级过滤</summary>
+    <div class="section-content">
     <div class="form-group" style="display:flex;align-items:center;gap:8px">
       <label style="flex:1;margin:0;cursor:pointer" for="only_first_signal">只跟首次信号</label>
       <input type="checkbox" id="only_first_signal" style="width:18px;height:18px;accent-color:#58a6ff">
@@ -298,11 +319,16 @@ tr:hover td{background:#161b22}
       </div>
     </div>
 
-    <!-- 风险控制 -->
-    <div class="section-title">风险控制</div>
+    </div>
+    </details>
+
+    <details class="accordion" open>
+    <summary>风险控制</summary>
+    <div class="section-content">
     <div class="form-group">
       <label>滑点 <span class="val" id="v-slp">30%</span></label>
-      <input type="range" id="slippage_pct" min="5" max="50" value="30" step="1" oninput="updateLabel(this,'v-slp','%')">
+      <input type="range" id="slippage_pct" min="5" max="50" value="30" step="1" oninput="updateLabel(this,'v-slp','%');updateBreakeven()">
+      <small id="breakeven-msg" class="breakeven-hint">盈亏平衡涨幅 ≈ 87%</small>
     </div>
     <div class="form-group">
       <label>优先费 <span class="val" id="v-pfee">0.001 SOL</span></label>
@@ -333,11 +359,14 @@ tr:hover td{background:#161b22}
       </select>
     </div>
 
+    </details>div>
+    </details>
+
     <div class="section-title" style="margin-top:16px">快速预设</div>
     <div class="preset-row" id="presets">
       <span class="preset-tag" data-preset="conservative">保守</span>
       <span class="preset-tag" data-preset="moderate">均衡</span>
-      <span class="preset-tag" data-preset="aggressive">激进</span>
+      <span class="preset-tag" data-preset="aggressive">激进<span style="font-size:9px;color:#d29922;display:block">高滑点慎用</span></span>
       <span class="preset-tag" data-preset="scalp">超短线</span>
     </div>
 
@@ -420,6 +449,13 @@ function updateHeader() {
   if (pfee) document.getElementById('hdr-pfee').textContent = parseFloat(pfee.value).toFixed(3) + ' SOL';
 }
 const updateHeaderThrottled = throttle(updateHeader, 100);
+
+function updateBreakeven() {
+  const slp = parseInt(document.getElementById('slippage_pct').value) / 100;
+  const gain = (1 + slp) / (1 - slp - 0.005) - 1;
+  document.getElementById('breakeven-msg').textContent =
+    '盈亏平衡涨幅 \u2248 ' + (gain * 100).toFixed(0) + '%';
+}
 
 function updateSignalConfirm() {
   const m = document.getElementById('signal_confirm_minutes').value;
@@ -516,7 +552,7 @@ function setLoading(msg) {
 }
 
 async function runSingle() {
-  setLoading('正在回测...');
+  setLoading('正在回测（约 20-30 秒）...');
   document.getElementById('btn-single').disabled = true;
   document.getElementById('btn-grid').disabled = true;
   const start = Date.now();
@@ -564,7 +600,7 @@ async function pollGridStatus() {
     const job = await resp.json();
     if (job.running) {
       const pct = job.total > 0 ? (job.progress / job.total * 100).toFixed(0) : 0;
-      statusEl.innerHTML = `<div class="loading"><span class="spinner"></span> 网格回测中... ${job.progress}/${job.total} (${pct}%)</div>`;
+      statusEl.innerHTML = `<div class="loading-wrap"><div style="display:flex;align-items:center;gap:8px"><span class="spinner"></span><span style="color:#e6edf3">网格回测中</span></div><div class="progress-bar"><div class="progress-bar-fill" style="width:${pct}%"></div></div><div class="progress-text">${job.progress} / ${job.total} 组 (${pct}%)</div></div>`;
       setTimeout(pollGridStatus, 2000);
     } else if (job.error) {
       statusEl.innerHTML = `<div class="empty">回测出错: ${job.error}</div>`;
@@ -668,7 +704,10 @@ function showSingleResult(data, dur) {
     document.getElementById('content-rank').innerHTML = `<div class="empty" style="color:#8b949e">单次回测完成 — 切换到「交易明细」查看详情</div>`;
     renderTradeTable(data.trades);
   } else {
-    document.getElementById('content-rank').innerHTML = '<div class="empty">无符合条件的交易</div>';
+    const msg = (data.summary && data.summary.total_trades === 0)
+      ? '当前过滤条件下无成交样本，请放宽高级过滤条件'
+      : '无符合条件的交易';
+    document.getElementById('content-rank').innerHTML = `<div class="empty" style="max-width:300px;margin:0 auto;line-height:1.6">${msg}</div>`;
     document.getElementById('content-detail').innerHTML = '<div class="empty">无交易记录</div>';
   }
 }
@@ -681,7 +720,7 @@ function showGridResult(data, dur) {
   showDataQuality(data.data_quality);
 
   if (strategies.length === 0) {
-    document.getElementById('content-rank').innerHTML = '<div class="empty">无符合条件的策略</div>';
+    document.getElementById('content-rank').innerHTML = '<div class="empty" style="max-width:300px;margin:0 auto;line-height:1.6">无符合条件的策略。<br>提示：当前数据量下某些过滤组合可能无成交，请尝试放宽高级过滤或减少信号确认数</div>';
     return;
   }
 
