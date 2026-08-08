@@ -31,7 +31,7 @@ from db import (
     get_latest_signal_time, get_unprocessed_count, get_latest_unresolved_alert,
     get_latest_signals, get_token_kline, get_all_tracked_tokens,
     upsert_token_detail, insert_token_metric, upsert_signal_agg, insert_wallet_trades,
-    run_migrations, save_best_strategy,
+    run_migrations, save_best_strategy, rebuild_signal_agg, get_saved_strategies,
 )
 from scraper import DebotScraper
 from api_client import DebotAPIClient, create_client_from_env
@@ -269,6 +269,15 @@ def run_once(scraper: DebotScraper = None, api_client: DebotAPIClient = None) ->
 
     stats["duration_ms"] = int((time.time() - start_time) * 1000)
     _write_run_log(stats)
+
+    # 新信号入库后自动重建聚合表，确保计数准确
+    if stats["new"] > 0:
+        try:
+            with get_conn() as conn:
+                rebuild_signal_agg(conn)
+        except Exception as e:
+            logger.warning(f"自动重建聚合表失败: {e}")
+
     return stats
 
 
@@ -528,6 +537,39 @@ class HealthHandler(BaseHTTPRequestHandler):
                 self.send_response(500)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path == "/saved-strategies":
+            # 获取已保存的策略列表
+            try:
+                with get_conn() as conn:
+                    strategies = get_saved_strategies(conn)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "strategies": strategies, "count": len(strategies)}, ensure_ascii=False).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path == "/rebuild-agg":
+            # 从源表重建 debot_signal_agg（修复计数虚高）
+            logger.info("收到重建聚合表请求")
+            try:
+                with get_conn() as conn:
+                    result = rebuild_signal_agg(conn)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, **result}, ensure_ascii=False).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
 

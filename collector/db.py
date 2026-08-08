@@ -323,6 +323,52 @@ def upsert_signal_agg(conn, agg: dict) -> None:
         logger.warning(f"upsert 信号累计失败: {e}, addr={agg.get('contract_address')}")
 
 
+def rebuild_signal_agg(conn) -> dict:
+    """
+    从 debot_signal 源表重建 debot_signal_agg，消除计数虚高。
+    返回 {rebuilt: int} 重建条数。
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO debot_signal_agg
+                    (contract_address, signal_count, first_signal_time, first_price,
+                     max_price, max_price_gain, update_time)
+                SELECT
+                    s.contract_address,
+                    COUNT(*) AS signal_count,
+                    MIN(s.signal_time) AS first_signal_time,
+                    MIN(s.price_usd) FILTER (WHERE s.signal_time = first_signal.first_time) AS first_price,
+                    MAX(m.max_price) AS max_price,
+                    MAX(m.max_price_gain) AS max_price_gain,
+                    NOW()
+                FROM debot_signal s
+                LEFT JOIN LATERAL (
+                    SELECT MIN(s2.signal_time) AS first_time
+                    FROM debot_signal s2
+                    WHERE s2.contract_address = s.contract_address AND s2.contract_address != ''
+                ) first_signal ON TRUE
+                LEFT JOIN debot_token_metric m ON m.contract_address = s.contract_address
+                WHERE s.contract_address != ''
+                GROUP BY s.contract_address
+                ON CONFLICT (contract_address) DO UPDATE SET
+                    signal_count = EXCLUDED.signal_count,
+                    first_signal_time = EXCLUDED.first_signal_time,
+                    first_price = EXCLUDED.first_price,
+                    max_price = EXCLUDED.max_price,
+                    max_price_gain = EXCLUDED.max_price_gain,
+                    update_time = NOW()
+            """)
+            conn.commit()
+            rebuilt = cur.rowcount
+            logger.info(f"debot_signal_agg 重建完成: {rebuilt} 条记录")
+            return {"rebuilt": rebuilt}
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"重建 signal_agg 失败: {e}")
+        return {"rebuilt": 0, "error": str(e)}
+
+
 def insert_wallet_trades(conn, signal_id: int, contract_address: str, wallets: list) -> None:
     """
     批量插入聪明钱包交易明细。
@@ -680,6 +726,37 @@ def get_active_strategy(conn) -> dict | None:
     except Exception as e:
         logger.error(f"获取活跃策略失败: {e}")
         return None
+
+
+def get_saved_strategies(conn, limit: int = 20) -> list:
+    """
+    获取已保存的策略列表（最近 N 条），支持前端一键加载。
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, strategy_params, backtest_profit, max_drawdown,
+                       win_rate, backtest_date_range, update_time, is_enable
+                FROM best_strategy_config
+                ORDER BY update_time DESC
+                LIMIT %s
+            """, (limit,))
+            columns = [desc[0] for desc in cur.description]
+            results = []
+            for row in cur.fetchall():
+                item = dict(zip(columns, row))
+                if isinstance(item.get("strategy_params"), str):
+                    item["strategy_params"] = __import__("json").loads(item["strategy_params"])
+                for key in ("backtest_profit", "max_drawdown", "win_rate"):
+                    if item.get(key) is not None:
+                        item[key] = float(item[key])
+                if item.get("update_time"):
+                    item["update_time"] = str(item["update_time"])
+                results.append(item)
+            return results
+    except Exception as e:
+        logger.error(f"获取已保存策略列表失败: {e}")
+        return []
 
 
 # ============================================================

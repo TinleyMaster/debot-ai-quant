@@ -79,6 +79,7 @@ tr:hover td{background:#161b22}
 .progress-text{font-size:12px;color:#8b949e}
 .spinner{width:24px;height:24px;border:2px solid #30363d;border-top-color:#58a6ff;border-radius:50%;animation:spin .8s linear infinite;margin-right:8px}
 @keyframes spin{to{transform:rotate(360deg)}}
+@keyframes fadeInUp{from{opacity:0;transform:translateX(-50%) translateY(12px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
 .empty{display:flex;align-items:center;justify-content:center;height:200px;color:#8b949e;font-size:13px}
 .accordion{margin-bottom:4px}
 .accordion summary{font-size:11px;font-weight:600;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;padding:6px 0;cursor:pointer;list-style:none}
@@ -358,8 +359,7 @@ tr:hover td{background:#161b22}
         <option value="0.05">5%</option>
       </select>
     </div>
-
-    </details>div>
+    </div>
     </details>
 
     <div class="section-title" style="margin-top:16px">快速预设</div>
@@ -375,6 +375,11 @@ tr:hover td{background:#161b22}
       <button class="btn btn-warning" onclick="runGrid()" id="btn-grid">全部迭代回测</button>
       <button class="btn" style="background:#1a7f37;color:#fff" onclick="saveStrategy()" id="btn-save">保存策略</button>
     </div>
+    <div class="section-title" style="margin-top:16px">已保存策略</div>
+    <div id="saved-strategies-list" style="max-height:200px;overflow-y:auto;font-size:11px">
+      <div style="color:#484f58;text-align:center;padding:8px" id="saved-empty">点击加载...</div>
+    </div>
+    <button class="btn" style="width:100%;margin-top:6px;background:#21262d;color:#8b949e" onclick="loadSavedStrategies()">刷新策略列表</button>
     <div class="section-title" style="margin-top:16px">定时任务</div>
     <button class="btn" style="width:100%;background:#21262d;color:#8b949e" onclick="loadLatest()">加载最新网格回测报告</button>
     <button class="btn" style="width:100%;margin-top:6px;background:#21262d;color:#8b949e" onclick="loadReport()">加载活跃策略报告</button>
@@ -666,15 +671,116 @@ async function saveStrategy() {
     });
     const data = await resp.json();
     if (data.success) {
-      btn.textContent = '已保存';
-      setTimeout(function() { btn.textContent = orig; btn.disabled = false; }, 2000);
+      showToast('策略已保存');
+      btn.textContent = orig;
+      btn.disabled = false;
+      loadSavedStrategies();  // 自动刷新列表
     } else {
       throw new Error(data.error || '保存失败');
     }
   } catch(e) {
     btn.textContent = orig;
     btn.disabled = false;
-    alert('保存策略失败: ' + e.message);
+    showToast('保存失败: ' + e.message, true);
+  }
+}
+
+function showToast(msg, isError) {
+  const existing = document.getElementById('toast');
+  if (existing) existing.remove();
+  const toast = document.createElement('div');
+  toast.id = 'toast';
+  toast.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:10px 24px;border-radius:8px;font-size:13px;font-weight:600;z-index:9999;animation:fadeInUp .3s ease;'
+    + (isError ? 'background:#da3633;color:#fff' : 'background:#238636;color:#fff');
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(function() { toast.remove(); }, 2500);
+}
+
+async function loadSavedStrategies() {
+  const listEl = document.getElementById('saved-strategies-list');
+  const emptyEl = document.getElementById('saved-empty');
+  listEl.innerHTML = '';
+  try {
+    const resp = await fetch('/saved-strategies');
+    const data = await resp.json();
+    if (!data.success || !data.strategies || data.strategies.length === 0) {
+      listEl.innerHTML = '<div style="color:#484f58;text-align:center;padding:8px">暂无已保存策略</div>';
+      return;
+    }
+    data.strategies.forEach(function(s) {
+      const p = s.strategy_params || {};
+      const profit = (s.backtest_profit != null ? (s.backtest_profit*100).toFixed(1)+'%' : '-');
+      const win = (s.win_rate != null ? (s.win_rate*100).toFixed(0)+'%' : '-');
+      const cls = s.backtest_profit >= 0 ? 'profit-pos' : 'profit-neg';
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:5px 8px;margin:2px 0;background:#21262d;border-radius:4px;cursor:pointer;transition:background .15s';
+      row.innerHTML = '<div style="flex:1;min-width:0"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+        + 'TP'+(p.take_profit ? (p.take_profit*100).toFixed(0)+'%' : '-')
+        + ' SL'+(p.stop_loss ? (p.stop_loss*100).toFixed(0)+'%' : '-')
+        + ' H'+(p.max_hold_hours||'-')+'h'
+        + ' B'+(p.max_buys_per_token||'-')
+        + '</div><div style="font-size:10px;color:#8b949e">'+(s.update_time||'').slice(0,10)+'</div></div>'
+        + '<div style="text-align:right;margin-left:8px"><span class="'+cls+'" style="font-weight:600">'+profit+'</span>'
+        + '<span style="color:#8b949e;margin-left:4px">'+win+'</span></div>';
+      row.addEventListener('click', function() { applyStrategy(s); });
+      row.addEventListener('mouseenter', function() { this.style.background = '#30363d'; });
+      row.addEventListener('mouseleave', function() { this.style.background = '#21262d'; });
+      listEl.appendChild(row);
+    });
+  } catch(e) {
+    listEl.innerHTML = '<div style="color:#f85149;text-align:center;padding:8px">加载失败</div>';
+  }
+}
+
+function applyStrategy(strategy) {
+  const p = strategy.strategy_params || {};
+  // 基础设置
+  if (p.buy_amount_sol != null) setVal('buy_amount_sol', p.buy_amount_sol);
+  // 买入策略
+  if (p.max_buys_per_token != null) setSelectVal('max_buys_per_token', p.max_buys_per_token);
+  // 卖出策略
+  if (p.take_profit != null) setVal('take_profit', Math.round(p.take_profit * 100));
+  if (p.stop_loss != null) setVal('stop_loss', Math.round(p.stop_loss * 100));
+  if (p.max_hold_hours != null) setSelectVal('max_hold_hours', p.max_hold_hours);
+  // 高级过滤
+  if (p.only_first_signal != null) document.getElementById('only_first_signal').checked = p.only_first_signal;
+  if (p.signal_confirm_minutes != null) setSelectVal('signal_confirm_minutes', p.signal_confirm_minutes);
+  if (p.signal_confirm_count != null) setSelectVal('signal_confirm_count', p.signal_confirm_count);
+  if (p.min_token_age_minutes != null) setSelectVal('min_token_age_minutes', p.min_token_age_minutes);
+  if (p.max_token_age_hours != null) setSelectVal('max_token_age_hours', p.max_token_age_hours);
+  if (p.min_market_cap_usd != null) setSelectVal('min_market_cap_usd', p.min_market_cap_usd);
+  if (p.max_market_cap_usd != null) setSelectVal('max_market_cap_usd', p.max_market_cap_usd);
+  if (p.min_holders != null) setSelectVal('min_holders', p.min_holders);
+  if (p.max_holders != null) setSelectVal('max_holders', p.max_holders);
+  if (p.max_holder_rate != null) setSelectVal('max_holder_rate', p.max_holder_rate);
+  if (p.runtime_start_hour != null) setSelectVal('runtime_start_hour', p.runtime_start_hour);
+  if (p.runtime_end_hour != null) setSelectVal('runtime_end_hour', p.runtime_end_hour);
+  // 风险控制
+  if (p.slippage_pct != null) { setVal('slippage_pct', Math.round(p.slippage_pct * 100)); updateBreakeven(); }
+  if (p.priority_fee_sol != null) setSelectVal('priority_fee_sol', p.priority_fee_sol);
+  if (p.bribe_fee_sol != null) setSelectVal('bribe_fee_sol', p.bribe_fee_sol);
+  if (p.price_deviation_pct != null) setSelectVal('price_deviation_pct', p.price_deviation_pct);
+  // 刷新所有标签
+  ['take_profit','stop_loss','max_hold_hours','max_buys_per_token','max_token_age_hours','signal_confirm_count','signal_confirm_minutes',
+   'min_token_age_minutes','max_token_age_hours','min_market_cap_usd','max_market_cap_usd','min_holders','max_holders','max_holder_rate',
+   'runtime_start_hour','runtime_end_hour','slippage_pct','priority_fee_sol','bribe_fee_sol','price_deviation_pct','buy_amount_sol'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input'));
+  });
+  updateAgeLabel(); updateMcLabel(); updateHolderLabel(); updateRuntimeLabel(); updateSignalConfirm();
+  showToast('已加载: TP'+Math.round((p.take_profit||0)*100)+'% SL'+Math.round((p.stop_loss||0)*100)+'%');
+}
+
+function setVal(id, val) {
+  var el = document.getElementById(id);
+  if (el) { el.value = val; document.getElementById('v-'+{buy_amount_sol:'buyAmt',take_profit:'tp',stop_loss:'sl',slippage_pct:'slp'}[id]||id).textContent = val + (id==='buy_amount_sol'?' SOL':'%'); }
+}
+function setSelectVal(id, val) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  for (var i = 0; i < el.options.length; i++) {
+    if (parseFloat(el.options[i].value) === parseFloat(val)) { el.selectedIndex = i; break; }
   }
 }
 
@@ -774,7 +880,9 @@ function showGridResult(data, dur) {
     </tr>`;
   });
   html += '</tbody></table></div>';
+  html += '<div style="margin-top:16px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px"><div style="font-size:11px;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">帕累托前沿 (盈亏比 vs 回撤)</div><div style="height:300px;position:relative"><canvas id="paretoCanvas"></canvas></div></div>';
   document.getElementById('content-rank').innerHTML = html;
+  renderParetoChart(strategies);
 }
 
 function renderTradeTable(trades) {
@@ -974,7 +1082,7 @@ function renderSignalTable(signals) {
   html += '</tr></thead><tbody>';
   signals.forEach(s => {
     const t = fmtTime(s.signal_time);
-    const holderRate = s.holder_rate != null ? (s.holder_rate*100).toFixed(0)+'%' : '-';
+    const holderRate = s.holder_rate != null && s.holder_rate >= 0 ? (s.holder_rate*100).toFixed(0)+'%' : '-';
     const holders = s.holders_count != null ? s.holders_count.toLocaleString() : '-';
     const wallets = s.smart_wallets != null ? s.smart_wallets : '-';
     const avgBuy = s.avg_buy_amount != null ? fmtCompact(s.avg_buy_amount, 0) : '-';
@@ -1223,7 +1331,123 @@ function closeSignalDetail() {
 // ============================================================
 // K线行情
 // ============================================================
-let tokensLoaded = false, klineChart = null;
+let tokensLoaded = false;
+let klineChart = null;
+let paretoChart = null;
+
+// 帕累托前沿可视化
+function renderParetoChart(strategies) {
+  if (paretoChart) { paretoChart.destroy(); paretoChart = null; }
+  const canvas = document.getElementById('paretoCanvas');
+  if (!canvas) return;
+
+  const points = strategies.filter(function(s) {
+    return s.profit_factor > 0 && s.profit_factor < 999 && s.max_drawdown_pct > 0 && s.total_trades > 0;
+  });
+  if (points.length < 2) return;
+
+  const data = points.map(function(s) {
+    return {
+      x: s.max_drawdown_pct * 100,
+      y: s.profit_factor,
+      r: Math.max(4, Math.min(18, Math.sqrt(s.total_trades) * 1.5)),
+      label: '#' + (strategies.indexOf(s) + 1),
+      winRate: s.win_rate,
+      totalTrades: s.total_trades,
+    };
+  });
+
+  // 帕累托前沿：按回撤排序，盈利比递减的点
+  const sorted = points.slice().sort(function(a, b) { return a.max_drawdown_pct - b.max_drawdown_pct; });
+  const frontier = [];
+  let maxPF = -Infinity;
+  for (var i = 0; i < sorted.length; i++) {
+    if (sorted[i].profit_factor > maxPF) {
+      maxPF = sorted[i].profit_factor;
+      frontier.push({ x: sorted[i].max_drawdown_pct * 100, y: sorted[i].profit_factor });
+    }
+  }
+  // 确保起点和终点闭合
+  if (frontier.length > 0) {
+    frontier.unshift({ x: frontier[0].x, y: 0 });
+  }
+
+  paretoChart = new Chart(canvas, {
+    type: 'bubble',
+    data: {
+      datasets: [{
+        label: '策略',
+        data: data,
+        backgroundColor: data.map(function(d) {
+          var r = Math.round(255 * (1 - d.winRate));
+          var g = Math.round(255 * d.winRate);
+          return 'rgba(' + r + ',' + g + ',80,0.7)';
+        }),
+        borderColor: data.map(function(d) {
+          var r = Math.round(200 * (1 - d.winRate));
+          var g = Math.round(200 * d.winRate);
+          return 'rgba(' + r + ',' + g + ',60,1)';
+        }),
+        borderWidth: 1,
+      }, {
+        label: '帕累托前沿',
+        data: frontier,
+        type: 'line',
+        borderColor: 'rgba(88,166,255,0.5)',
+        backgroundColor: 'rgba(88,166,255,0.05)',
+        borderWidth: 2,
+        borderDash: [6, 4],
+        pointRadius: 3,
+        pointBackgroundColor: '#58a6ff',
+        fill: true,
+        order: 1,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: { color: '#8b949e', font: { size: 10 }, boxWidth: 10, padding: 8 },
+        },
+        tooltip: {
+          backgroundColor: '#161b22',
+          borderColor: '#30363d',
+          borderWidth: 1,
+          titleColor: '#c9d1d9',
+          bodyColor: '#c9d1d9',
+          callbacks: {
+            label: function(ctx) {
+              if (ctx.dataset.label === '帕累托前沿') return '';
+              var d = ctx.raw;
+              return [
+                d.label + ' 盈亏比: ' + d.y.toFixed(2),
+                '回撤: ' + d.x.toFixed(1) + '%',
+                '胜率: ' + (d.winRate * 100).toFixed(0) + '%',
+                '交易: ' + d.totalTrades + ' 笔',
+              ];
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          title: { display: true, text: '最大回撤 (%)', color: '#8b949e', font: { size: 10 } },
+          ticks: { color: '#484f58', font: { size: 9 } },
+          grid: { color: '#21262d' },
+          min: 0,
+        },
+        y: {
+          title: { display: true, text: '盈亏比', color: '#8b949e', font: { size: 10 } },
+          ticks: { color: '#484f58', font: { size: 9 } },
+          grid: { color: '#21262d' },
+          min: 0,
+        },
+      },
+    },
+  });
+}
 
 async function loadTokenList() {
   try {
@@ -1540,6 +1764,7 @@ function renderChart(klineData, addr, trades, signalAnnotations) {
 document.querySelectorAll('select, input[type=range]').forEach(f => {
   f.dispatchEvent(new Event('input'));
 });
+loadSavedStrategies();
 </script>
 </body>
 </html>

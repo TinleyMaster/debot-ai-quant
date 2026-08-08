@@ -432,7 +432,12 @@ class BacktestEngine:
             return None
 
         # -- TOP持仓过滤 (Debot: TOP持仓小于 X%) --
-        holder_rate = signal.get("holder_rate") or 0
+        holder_rate = signal.get("holder_rate")
+        if holder_rate is None or holder_rate < 0:
+            # 未知 / 哨兵值 → 若过滤开启则拒绝（保守策略，防镰刀币绕过）
+            if params.max_holder_rate > 0:
+                return None
+            holder_rate = 0
         if params.max_holder_rate > 0 and holder_rate > params.max_holder_rate:
             return None
 
